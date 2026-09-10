@@ -1,0 +1,16 @@
+name: Import registry
+
+# 本番（Supabase）へのレジストリ取り込み。レジストリは更新が止まっているので、スキーマを変えたときなどに手で流す。
+on:
+  workflow_dispatch:
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo run --release -p pipeline -- import-registry
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}

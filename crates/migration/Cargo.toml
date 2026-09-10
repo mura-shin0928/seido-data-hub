@@ -1,0 +1,17 @@
+[package]
+edition.workspace = true
+rust-version.workspace = true
+name         = "migration"
+publish      = false
+version      = "0.1.0"
+
+[lib]
+name = "migration"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
+
+[dependencies.sea-orm-migration]
+features = ["runtime-tokio-rustls", "sqlx-postgres"]
+version = "2"

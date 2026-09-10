@@ -1,0 +1,8 @@
+[workspace]
+resolver = "3"
+members = ["crates/domain", "crates/entity", "crates/migration", "crates/pipeline"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.94"
+publish = false

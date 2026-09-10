@@ -1,0 +1,459 @@
+[
+  {
+    "institutionName": {
+      "canonicalName": "児童手当",
+      "shortName": "児童手当"
+    },
+    "summary": "家庭における生活の安定と、これからの社会を担うお子さんの健やかな成長のために、高校生年代までの児童（0歳から18歳に達する日以後の最初の3月31日までの間にある子）を養育している人に、児童手当を支給します。",
+    "description": "児童手当制度について\n更新日：2024年6月24日\n〇児童手当の令和６年度制度改正について\n〇児童手当制度について（改正前）\n\n児童手当法の一部改正により制度の入部が変更されます\nhttps://www.city.koganei.lg.jp/smph/kosodatekyoiku/N84/kakusyuteate/jidoteate/teatekaisei.html\n〇制度の変更点　〇申請案内の送付　〇手当の受給に必要となる申請等",
+    "target": {
+      "targetPersons": "高校生年代（18歳に達する日以後の最初の3月31日）までのお子さんを養育している方が対象です。\nお子さんを養育している父母、または未成年後見人の場合:原則として、お子さんが日本国内に住んでいる場合に手当を支給します。\nお子さんが留学を理由に海外に住んでおり、以下の要件を満たしている場合は、例外として、そのお子さんの分の手当を受け取ることができます。\n1.日本国内に住所を有しなくなった前日までに日本国内に継続して3年を超えて住所を有していたこと\n2.教育を受けることを目的として海外に居住しており、父母（未成年後見人がいる場合はその未成年後見人）と同居していないこと\n3.日本国内に住所を有しなくなった日から3年以内であること\n※その他、短期間留学していて日本に帰国し、再び3年以内に留学する場合などは、上記の要件を満たしていなくても、手当を受け取れる場合があります。\n両親が離婚協議中で別居している場合:父母が、離婚協議中で別居している場合は、お子さんと同居している方を優先して支給する場合があります。\n父母等が海外に住んでいる場合:父母等が海外に住んでいる場合、その父母が、日本国内に住むお子さんを養育している人を指定すれば、指定された方に手当を支給します。お子さんの住所のある市区町村に「父母指定者指定届」を提出して、認定を受けてください。\n※ただし、単身赴任の場合は、これまでどおり、お子さんの生活費を主に負担している方に支給します。\n未成年後見人がいる場合:お子さんを養育している未成年後見人がいる場合は、未成年後見人に手当を支給します。\nお子さんが施設に入所している場合や里親などに委託されている場合:お子さんが施設に入所している場合や里親などに委託されている（預けられている）場合は、原則として、その施設の設置者や里親などに手当を支給します。",
+      "lessThan": {
+        "targetAge": 3,
+        "targetAgeOfMonths": null
+      },
+      "lessThanOrEqualTo": {
+        "targetAge": null,
+        "targetAgeOfMonths": null
+      },
+      "greaterThanOrEqualTo": {
+        "targetAge": 0,
+        "targetAgeOfMonths": null
+      },
+      "greaterThan": {
+        "targetAge": null,
+        "targetAgeOfMonths": null
+      },
+      "conditions": "0歳から3歳未満\n\n第3子以降は養育する22歳（22歳に達する日以降の最初の3月31日）までの児童の人数により判定します。"
+    },
+    "support": {
+      "description": "手当は、偶数月に、前月までの2か月分をまとめて支給します。\n支給額は、支給対象となるお子さんの年齢や、養育するお子さんの人数により異なります。\n※養育するお子さんの人数は、大学生年代（22歳に達する日以降の最初の3月31日）までのお子さんのうち、年長者から第1子、第2子と数えます。\nお子さんの年齢や出生順位に応じて、以下の金額を支給します。\n＜0歳から3歳未満＞\n第1子、第2子：月額1万5,000円\n第3子以降：月額3万円",
+      "monetarySupport": "第1子、第2子：月額1万5,000円\n第3子以降：月額3万円",
+      "materiallySupport": null
+    },
+    "cost": null,
+    "costConditions": null,
+    "implementationPeriod": {
+      "fromYMD": null,
+      "fromHM": null,
+      "toYMD": null,
+      "toHM": null,
+      "conditions": null
+    },
+    "implementationPlace": {
+      "implementationName": null,
+      "implementationAddress": null
+    },
+    "capacity": null,
+    "utilizationTime": {
+      "fromHM": null,
+      "toHM": null,
+      "condiutilizationConditionstions": null
+    },
+    "specificDate": null,
+    "holiday": null,
+    "utilization": null,
+    "procedurePersons": null,
+    "procedureMethod": "児童手当制度について\nhttps://www.city.koganei.lg.jp/smph/kosodatekyoiku/N84/kakusyuteate/jidoteate/jidouteateseido1.html",
+    "procedurePeriod": {
+      "fromYMD": null,
+      "fromHM": null,
+      "toYMD": null,
+      "toHM": null,
+      "conditions": null
+    },
+    "electronicSubmission": false,
+    "belongings": "児童手当制度について\nhttps://www.city.koganei.lg.jp/smph/kosodatekyoiku/N84/kakusyuteate/jidoteate/jidouteateseido1.html",
+    "procedureDocumentsCode": {
+      "code": null,
+      "others": null
+    },
+    "procedureCounter": null,
+    "relatedLink": [],
+    "localGovernmentLink": {
+      "uri": "https://www.city.koganei.lg.jp/smph/kosodatekyoiku/N84/kakusyuteate/jidoteate/jidouteateseidogaiyo.html",
+      "title": "児童手当制度概要"
+    },
+    "formLink": [],
+    "contact": {
+      "contactName": "子育て支援課手当助成係",
+      "contactPhone": "042-387-9839",
+      "contactEx": null,
+      "contactEmail": "s050599(at)koganei-shi.jp\n注記：迷惑メール対策のため、メールアドレスの表記を一部変更しております。お手数ですが、メール送信の際は(at)を@に置き換えてご利用ください。\nまた、お使いの端末やメールサービスの迷惑メール対策等により、回答メールが受信できなかったり、迷惑メールフォルダに格納されたりする場合があります。「@koganei-shi.jp」からメールを受信できるように設定してください。",
+      "contactUrl": null,
+      "contactComment": null,
+      "zipCode": null,
+      "contactAddress": null
+    },
+    "area": {
+      "areaCode": "132101;小金井市",
+      "areaText": null
+    },
+    "class": 1,
+    "remarks": null,
+    "basicInformation": {
+      "psid": "psid3.0+3000020132101+1+UM24",
+      "organization": "3000020132101",
+      "compartment": "子育て支援課手当助成係",
+      "compartmentCode": null,
+      "institutionType": 1
+    },
+    "updateDate": "2012-04-01",
+    "odInformation": {
+      "updateDate": "2024-07-04",
+      "updater": "小金井市",
+      "content": "新規登録"
+    },
+    "regulation": {
+      "regulationName": "児童手当法",
+      "regulationArticle": null
+    },
+    "tag": {
+      "categoryCode": [
+        "003"
+      ],
+      "targetCode": [
+        "087"
+      ],
+      "contentsCode": [
+        "079"
+      ]
+    },
+    "useConsiderationFlag": false
+  },
+  {
+    "institutionName": {
+      "canonicalName": "出生届",
+      "shortName": "出生届"
+    },
+    "summary": "出生届とは、生まれてきたお子さんの氏名等を戸籍に記載するための手続きです。\n戸籍に記載されることで、生まれてきたお子さんの親族関係が公的に証明されます。\nあわせて、母子健康手帳に出生届出済証明を行います。",
+    "description": "出生届\n更新日：2024年3月1日\n\nお子さまが生まれたときに必要な届出です。\n\n届出期間\n生まれた日から14日以内にお届けください。（生まれた日を1日目として数えます。）14日目が市役所の閉庁日（土日・祝日）にあたる場合は、翌開庁日までにお届けください。\n国外で生まれた場合は3ヵ月以内です。なお、国外で出生し、外国籍も取得された場合は国籍留保の届出も必要です。\n\n届出地\n子の本籍地または届出人の所在地の市区町村役場です。出生地の市区町村役場でも届出ができます。\n\n届出人\n原則として、父または母です。（父母両方が届出人になることもできます。）\n父母が離婚しているか未婚の場合は母です。\n\n届出に必要なもの\n出生届　1通\n　出生届書（医師等により右半分の「出生証明書」に記入済みのもの）が医療機関等で渡されますので、左半分（届出人欄に署名が必要）にご記入の上、お届けください。\n　命名は常用漢字、人名用漢字、ひらがな、カタカナを使用してください。\n　名前に使える漢字については、外部サイトへリンク　新規ウインドウで開きます。こちら（外部サイト）;https://www.moj.go.jp/MINJI/minji86.htmlをご参照ください。\n\n母子健康手帳\n　出生届出済証明を行いますので、ご持参ください。当日ご持参が難しい場合は、後日でも可能です。（市役所の開庁日に市民課戸籍係にお持ちください。）\n　出生届出済証明は、出生届を提出した市区町村役場でしかできませんのでご注意ください。\n\n届出と同日にできる手続（夜間休日窓口を除く）\n出産育児一時金請求書の市区町村長証明の発行（社会保険加入者対象）\n提出先で用意されている上記請求書用紙をお持ちください。「市区町村長が証明するところ」欄に証明します。（手数料は無料です）\n運転免許証、パスポートなどの本人確認書類;https://www.city.koganei.lg.jp/smph/kurashi/410/zyumininkankoseki/413/shimin29.htmlをお持ちください。\n父母以外の方が来庁された場合は、父または母の委任状と来庁された方の本人確認書類;https://www.city.koganei.lg.jp/smph/kurashi/410/zyumininkankoseki/413/shimin29.htmlが必要です。\n届書に記入された住所及び本籍が小金井市の方は、休日開庁時でも発行できる場合があります。\n\n他部署での手続き\n小金井市にお住まいの方\n\n乳幼児医療費助成医療証交付申請;https://www.city.koganei.lg.jp/smph/kosodatekyoiku/N84/iryohi/yoji_iryo/kosodateshien08.html\n児童手当申請;https://www.city.koganei.lg.jp/smph/kosodatekyoiku/N84/kakusyuteate/jidoteate/jidouteateseidogaiyo.html\n\n小金井市で国民健康保険に加入の方\n\n子どもの国民健康保険の加入;https://www.city.koganei.lg.jp/smph/kurashi/427/shikaku/sikakuidounado.html\n出産育児一時金の申請;https://www.city.koganei.lg.jp/smph/kurashi/427/hokenkyuuhu/D030501020201125.html（子どもの母が国民健康保険に加入している場合）\n\n注意事項\n上記届出により、戸籍の記載、住民票の作成が順次行われます。\n\n夜間・休日の戸籍届出について\n夜間・休日の戸籍の届出については、こちら;https://www.city.koganei.lg.jp/smph/kurashi/410/zyumininkankoseki/412/051.htmlをご覧ください。\n\n記入例\n 出生届の記入例はこちら（PDF：204KB）;https://www.city.koganei.lg.jp/kurashi/410/zyumininkankoseki/412/syussyou.files/shussho.pdf",
+    "target": {
+      "targetPersons": "お子さま",
+      "lessThan": {
+        "targetAge": null,
+        "targetAgeOfMonths": null
+      },
+      "lessThanOrEqualTo": {
+        "targetAge": null,
+        "targetAgeOfMonths": null
+      },
+      "greaterThanOrEqualTo": {
+        "targetAge": null,
+        "targetAgeOfMonths": null
+      },
+      "greaterThan": {
+        "targetAge": null,
+        "targetAgeOfMonths": null
+      },
+      "conditions": null
+    },
+    "support": {
+      "description": null,
+      "monetarySupport": null,
+      "materiallySupport": null
+    },
+    "cost": null,
+    "costConditions": null,
+    "implementationPeriod": {
+      "fromYMD": null,
+      "fromHM": null,
+      "toYMD": null,
+      "toHM": null,
+      "conditions": null
+    },
+    "implementationPlace": {
+      "implementationName": null,
+      "implementationAddress": null
+    },
+    "capacity": null,
+    "utilizationTime": {
+      "fromHM": null,
+      "toHM": null,
+      "condiutilizationConditionstions": null
+    },
+    "specificDate": null,
+    "holiday": null,
+    "utilization": null,
+    "procedurePersons": "原則として父または母です。\n父母両方が届出人になることもできます。\n父母が離婚しているか未婚の場合は母です。",
+    "procedureMethod": "お子さまが生まれたときに必要な届出です。\n\n出生届書（医師等により右半分の「出生証明書」に記入済みのもの）が医療機関等で渡されますので、左半分（届出人欄に署名が必要）にご記入の上、お届けください。\n\n命名は常用漢字、人名用漢字、ひらがな、カタカナを使用してください。",
+    "procedurePeriod": {
+      "fromYMD": null,
+      "fromHM": null,
+      "toYMD": null,
+      "toHM": null,
+      "conditions": "生まれた日から14日以内にお届けください。（生まれた日を1日目として数えます。）14日目が市役所の閉庁日（土日・祝日）にあたる場合は、翌開庁日までにお届けください。\n国外で生まれた場合は3か月以内です。"
+    },
+    "electronicSubmission": false,
+    "belongings": "出生届　1通\n\n母子健康手帳\n（母子健康手帳は後日でも構いません）",
+    "procedureDocumentsCode": {
+      "code": null,
+      "others": null
+    },
+    "procedureCounter": "届出地\n子の本籍地または届出人の所在地の市区町村役場です。出生地の市区町村役場でも届出ができます。\n\n夜間・休日の戸籍届出について;https://www.city.koganei.lg.jp/smph/kurashi/410/zyumininkankoseki/412/051.html",
+    "relatedLink": [
+      {
+        "uri": "https://www.moj.go.jp/MINJI/minji86.html",
+        "title": "名前に使える漢字について（法務省サイト）"
+      }
+    ],
+    "localGovernmentLink": {
+      "uri": "https://www.city.koganei.lg.jp/smph/kurashi/410/zyumininkankoseki/412/syussyou.html",
+      "title": "出生届"
+    },
+    "formLink": [],
+    "contact": {
+      "contactName": "市民課戸籍係",
+      "contactPhone": "042-387-9816",
+      "contactEx": null,
+      "contactEmail": "s030199@koganei-shi.jp\n",
+      "contactUrl": null,
+      "contactComment": null,
+      "zipCode": "1848504",
+      "contactAddress": "小金井市本町6-6-3"
+    },
+    "area": {
+      "areaCode": "132101;小金井市",
+      "areaText": null
+    },
+    "class": 1,
+    "remarks": null,
+    "basicInformation": {
+      "psid": "psid3.0+3000020132101+1+UM3",
+      "organization": "3000020132101",
+      "compartment": "市民課戸籍係",
+      "compartmentCode": null,
+      "institutionType": 1
+    },
+    "updateDate": "2024-03-01",
+    "odInformation": {
+      "updateDate": "2024-07-01",
+      "updater": "小金井市",
+      "content": "新規登録"
+    },
+    "regulation": {
+      "regulationName": "戸籍法",
+      "regulationArticle": "第49条～第52条"
+    },
+    "tag": {
+      "categoryCode": [
+        "002"
+      ],
+      "targetCode": [
+        "087"
+      ],
+      "contentsCode": [
+        "077"
+      ]
+    },
+    "useConsiderationFlag": false
+  },
+  {
+    "institutionName": {
+      "canonicalName": "自治体独自の育児に関する金銭的支援",
+      "shortName": "018サポート"
+    },
+    "summary": "都内に在住する18歳以下の子供に対し、一人当たり月額5,000円（年額6万円）を支給することで学びなど子供の育ちを切れ目なくサポートし「子育てのしやすい東京」を実現します。",
+    "description": "018サポート\n概要\n018サポートのロゴマーク\n018（ゼロイチハチ）サポート\n　\n都内に在住する18歳以下の子供に対し、\n一人当たり月額5,000円（年額6万円）を支給することで\n学びなど子供の育ちを切れ目なくサポートし\n「子育てのしやすい東京」を実現します。\n　\n018サポート・チラシ(PDF:1,428KB);https://www.fukushi.metro.tokyo.lg.jp/kodomo/kosodate/018/index.files/1215.pdf\n018サポート・ガイド(PDF:1,184KB);https://www.fukushi.metro.tokyo.lg.jp/kodomo/kosodate/018/index.files/018-2.pdf\n018サポート・ポスター(PDF:1,257KB);https://www.fukushi.metro.tokyo.lg.jp/kodomo/kosodate/018/index.files/1215p.pdf\n\n対象者について\n以下の両方に該当する子供が対象です。所得制限はありません。\n\n0歳から18歳に達する日以後の最初の3月31日までの間にある方（平成17年（2005年）4月2日から令和6年（2024年）3月1日までに生まれた方）\n令和5年度中に都内に住所を有する又は有していた方（原則）\n　\n※令和5年度中に出生した方、都内に転入した方、都外に転出した方も対象となります。\n※各月1日時点の在住状況を確認します。\n　\n支給額・支給時期について\n支給額\n子供一人当たり月額5,000円\n　\n※都内に在住している月数に応じて支給します。\n※各月1日時点の在住状況を確認します。\n\n支給例・令和5年4月以前より都内在住の場合、月額5,000円×12か月で60,000円支給します。;https://www.fukushi.metro.tokyo.lg.jp/kodomo/kosodate/018/index.images/example.PNG\n支給時期\n令和5年度1年間分を以下の時期に支給します。\n\n令和5年12月15日（金曜日）までに申請　：　令和6年1月に支給\n令和6年2月15日（木曜日）までに申請　：　令和6年3月に支給\n令和6年3月15日（金曜日）までに申請　：　令和6年4月に支給\n※令和6年3月16日以降については、改めてお知らせします。\n\n申請について\n申請者\n対象者（子供）が18歳未満の場合は、保護者の方等が申請してください。\n対象者（子供）が18歳の場合は、保護者の方等から、または対象者（子供）本人から申請してください。\n　　※18歳は成人であるため、保護者の方等が申請する際には、対象者（子供）からの委任状が必要です。\n　\n必要書類\n申請には、以下の書類が必要です。あらかじめご準備をお願いいたします。\n\n1\t\n申請者の本人確認書類\n\nマイナンバーカードの場合　1点\n※カードのICチップをアプリで読み込む方法で、本人確認を行う場合\n※カード交付時にご自身で設定した、「署名用電子証明書のパスワード」が必要です。\n\nその他の本人確認書類の場合　2点\n（運転免許証、パスポート、障害者手帳、在留カード、各種健康保険証、国民年金手帳、住民票の写し　など）\n※2点のうち1点は、住所の記載があるものに限ります。\n\n2\t申請者と対象者（子供）との家族関係を確認できる書類\t\n対象者（子供）の医療証、健康保険証、住民票の写しのうち　1点\n※申請者の氏名と、対象者（子供）の氏名が記載されているものが必要です。\n※申請者ではない方（配偶者等）の氏名が記載されている場合は、家族関係確認書類としてご使用いただくことができません。\n※18歳の対象者（子供）本人が申請する場合には不要です。\n\n3\t振込口座を確認できる書類\t\n通帳やキャッシュカードなどのうち　1点\n※口座の名義は、申請者か対象者（子供）のいずれかをお選びください。\n\n令和5年度中に出生した場合や、都内に転入した場合、都外へ転出した場合、対象者（子供）が海外留学中の場合などには、上記以外にも書類が必要です。\n詳細は、次の「申請方法」にある東京都018サポートポータルサイトの「必要書類・申請方法確認」ページをご覧ください。\n　\n申請方法\n以下のホームページから、申請をお願いいたします。\n\n東京都018サポートポータルサイト：https://018support.metro.tokyo.lg.jp/;https://018support.metro.tokyo.lg.jp/\n　\n※オンライン申請ができない場合、郵送での申請も受け付けます。\n　郵送で申請するには、専用の申請書類が必要です。\n　書類をお送りしますので、コールセンターにお電話ください。\n　\n個別案内について\n概要\n東京都から対象者の方に、チラシとオンライン申請用ガイドを個別に郵送しました。\n\n住民票上の住所に届きますので、申請の際にご参照ください。\n\n※年度途中に出生、転入、転出された方には、案内が届かない場合がありますが、申請は可能です。\n\n誤送付について（お詫び）\nこの度、018サポートの案内チラシを、既に都内に在住してない方に送付していたことが判明しました。\n対象者の方に多大な御迷惑をおかけしたことを深くお詫び申し上げ、再発防止に努めてまいります。\n詳細については、こちらのポータルサイト;https://018support.metro.tokyo.lg.jp/info/20230919.htmlに掲載しております。\n\n留意事項\n課税について\n018サポート給付金は、対象者（子供）の所得になります。\n対象となる子供の1年間の所得が018サポート給付金のみの場合は、課税されません。\nただし、対象となる子供に018サポート給付金以外の一時所得の収入がある場合や、対象となる子供が日本国外にお住まいの場合は、課税されることがあります。\n　\n生活保護世帯の収入認定除外について【10月23日更新】\n生活保護を受給されている方について、018サポート給付金は収入として認定されません。\n\n詐欺にご注意ください！\n018サポートに便乗した詐欺等が発生する恐れがあります。\n東京都や区市町村の職員、東京都の委託事業者などが以下のような連絡をすることは、絶対にありませんので、十分にご注意ください。\n\n支給のために、ATMの操作や手数料の振込をお願いする。\n銀行口座の暗証番号を聞く。\nクレジットカードの番号や暗証番号を聞く。\n　\n申請の際は、ホームページのURLが正しいか、必ずご確認ください。\n以下のとおり、ドメイン名が「metro.tokyo.lg.jp」となっているものが正しいURLです。\n\n東京都018サポートポータルサイト：https://018support.metro.tokyo.lg.jp/;https://018support.metro.tokyo.lg.jp/\n　\nやさしい日本語・多言語版のチラシ等\nやさしい日本語版\n　　　動画 「申し込みをする前の 準備について」;https://youtu.be/hiQhg__A9kg\n　　　動画 「マイナンバーカードで 申し込みをするとき」;https://youtu.be/lQxRJN4ajiE\n　　　動画 「書類を 2つ アップロードして 申し込みをするとき」;https://youtu.be/2sBrs3TwTZY\n　　　018サポート・チラシ（やさしい日本語版）(PDF:1,413KB);https://www.fukushi.metro.tokyo.lg.jp/kodomo/kosodate/018/index.files/1215yasanichi.pdf\n　　　018サポート・オンライン申請用ガイド（やさしい日本語版）(PDF:1,710KB);https://www.fukushi.metro.tokyo.lg.jp/kodomo/kosodate/018/index.files/018_2_2.pdf\n\n英語版\n　　　018サポート・チラシ（英語版）(PDF:1,450KB);https://www.fukushi.metro.tokyo.lg.jp/kodomo/kosodate/018/index.files/1215EN.pdf\n　　　018サポート・オンライン申請用ガイド（英語版）(PDF:1,746KB);https://www.fukushi.metro.tokyo.lg.jp/kodomo/kosodate/018/index.files/018_1_2.pdf\n中国語版\n　　　018サポート・チラシ（中国語版）(PDF:1,575KB);https://www.fukushi.metro.tokyo.lg.jp/kodomo/kosodate/018/index.files/1215CN.pdf\n　　　018サポート・オンライン申請用ガイド（中国語版）(PDF:1,859KB);https://www.fukushi.metro.tokyo.lg.jp/kodomo/kosodate/018/index.files/018_3_2.pdf\n\n韓国語版\n　　　018サポート・チラシ（韓国語版）(PDF:1,477KB);https://www.fukushi.metro.tokyo.lg.jp/kodomo/kosodate/018/index.files/1215KR.pdf\n　　　018サポート・オンライン申請用ガイド（韓国語版）(PDF:1,755KB);https://www.fukushi.metro.tokyo.lg.jp/kodomo/kosodate/018/index.files/018_4_2.pdf\n　\nその他資料\n018サポート実施要綱(PDF:120KB);https://www.fukushi.metro.tokyo.lg.jp/kodomo/kosodate/018/index.files/018youkou.pdf\n018サポート取扱要領(PDF:481KB);https://www.fukushi.metro.tokyo.lg.jp/kodomo/kosodate/018/index.files/018youryou.pdf\nお問合せ先\n東京都018サポート給付金コールセンター\n\nナビダイヤル：0570-082-018\n\n※9時から18時まで（年末年始を除く土日祝日も開設）",
+    "target": {
+      "targetPersons": "以下の両方に該当する子供が対象です。所得制限はありません。\n0歳から18歳に達する日以後の最初の3月31日までの間にある方\n令和6年度中に都内に住所を有する又は有していた方（原則）\n※各月1日時点の在住状況を確認します。\n※令和6年度中に出生した方、都内に転入した方、都外に転出した方も対象となります。",
+      "lessThan": {
+        "targetAge": null,
+        "targetAgeOfMonths": null
+      },
+      "lessThanOrEqualTo": {
+        "targetAge": null,
+        "targetAgeOfMonths": null
+      },
+      "greaterThanOrEqualTo": {
+        "targetAge": 0,
+        "targetAgeOfMonths": null
+      },
+      "greaterThan": {
+        "targetAge": null,
+        "targetAgeOfMonths": null
+      },
+      "conditions": "0歳から18歳に達する日以後の最初の3月31日までの間にある方"
+    },
+    "support": {
+      "description": "子供一人当たり月額5,000円",
+      "monetarySupport": "子供一人当たり月額5,000円",
+      "materiallySupport": null
+    },
+    "cost": null,
+    "costConditions": null,
+    "implementationPeriod": {
+      "fromYMD": null,
+      "fromHM": null,
+      "toYMD": null,
+      "toHM": null,
+      "conditions": null
+    },
+    "implementationPlace": {
+      "implementationName": null,
+      "implementationAddress": null
+    },
+    "capacity": null,
+    "utilizationTime": {
+      "fromHM": null,
+      "toHM": null,
+      "condiutilizationConditionstions": null
+    },
+    "specificDate": null,
+    "holiday": null,
+    "utilization": null,
+    "procedurePersons": "対象者（子供）が18歳未満の場合は、保護者の方等が申請してください。\n対象者（子供）が18歳の場合は、保護者の方等から、または対象者（子供）本人から申請してください。\n　　※18歳は成人であるため、保護者の方等が申請する際には、対象者（子供）からの委任状が必要です。",
+    "procedureMethod": "以下のホームページから、申請をお願いいたします。\n\n東京都018サポートポータルサイト：https://018support.metro.tokyo.lg.jp/;https://018support.metro.tokyo.lg.jp/\n　\n※オンライン申請ができない場合、郵送での申請も受け付けます。\n　郵送で申請するには、専用の申請書類が必要です。\n　書類をお送りしますので、コールセンターにお電話ください。",
+    "procedurePeriod": {
+      "fromYMD": null,
+      "fromHM": null,
+      "toYMD": null,
+      "toHM": null,
+      "conditions": null
+    },
+    "electronicSubmission": true,
+    "belongings": null,
+    "procedureDocumentsCode": {
+      "code": null,
+      "others": null
+    },
+    "procedureCounter": null,
+    "relatedLink": [
+      {
+        "uri": "https://youtu.be/2sBrs3TwTZY",
+        "title": "https://018support.metro.tokyo.lg.jp/"
+      },
+      {
+        "uri": "https://www.fukushi.metro.tokyo.lg.jp/kodomo/kosodate/018/index.files/1215.pdf",
+        "title": "018サポート・チラシ(PDF:1"
+      },
+      {
+        "uri": "https://www.fukushi.metro.tokyo.lg.jp/kodomo/kosodate/018/index.files/018-2.pdf",
+        "title": "428KB)"
+      },
+      {
+        "uri": "https://www.fukushi.metro.tokyo.lg.jp/kodomo/kosodate/018/index.files/1215p.pdf",
+        "title": "018サポート・ガイド(PDF:1"
+      },
+      {
+        "uri": "https://www.fukushi.metro.tokyo.lg.jp/kodomo/kosodate/018/index.images/example.PNG",
+        "title": "184KB)"
+      },
+      {
+        "uri": "https://018support.metro.tokyo.lg.jp/",
+        "title": "018サポート・ポスター(PDF:1"
+      },
+      {
+        "uri": "https://018support.metro.tokyo.lg.jp/info/20230919.html",
+        "title": "257KB)"
+      },
+      {
+        "uri": "https://018support.metro.tokyo.lg.jp/",
+        "title": "支給例・令和5年4月以前より都内在住の場合、月額5"
+      },
+      {
+        "uri": "https://youtu.be/hiQhg__A9kg",
+        "title": "000円×12か月で60"
+      },
+      {
+        "uri": "https://youtu.be/lQxRJN4ajiE",
+        "title": "000円支給します。"
+      },
+      {
+        "uri": "https://www.fukushi.metro.tokyo.lg.jp/kodomo/kosodate/018/index.files/1215yasanichi.pdf",
+        "title": "こちらのポータルサイト"
+      },
+      {
+        "uri": "https://www.fukushi.metro.tokyo.lg.jp/kodomo/kosodate/018/index.files/018_2_2.pdf",
+        "title": "https://018support.metro.tokyo.lg.jp/"
+      },
+      {
+        "uri": "https://www.fukushi.metro.tokyo.lg.jp/kodomo/kosodate/018/index.files/1215EN.pdf",
+        "title": "　　動画 「申し込みをする前の 準備について」"
+      },
+      {
+        "uri": "https://www.fukushi.metro.tokyo.lg.jp/kodomo/kosodate/018/index.files/018_1_2.pdf",
+        "title": "　　　動画 「マイナンバーカードで 申し込みをするとき」\n　　　動画 「書類を 2つ アップロードして 申し込みをするとき」"
+      },
+      {
+        "uri": "https://www.fukushi.metro.tokyo.lg.jp/kodomo/kosodate/018/index.files/1215CN.pdf",
+        "title": "　　　018サポート・チラシ（やさしい日本語版）(PDF:1"
+      },
+      {
+        "uri": "https://www.fukushi.metro.tokyo.lg.jp/kodomo/kosodate/018/index.files/018_3_2.pdf",
+        "title": "413KB)"
+      },
+      {
+        "uri": "https://www.fukushi.metro.tokyo.lg.jp/kodomo/kosodate/018/index.files/1215KR.pdf",
+        "title": "018サポート・オンライン申請用ガイド（やさしい日本語版）(PDF:1"
+      },
+      {
+        "uri": "https://www.fukushi.metro.tokyo.lg.jp/kodomo/kosodate/018/index.files/018_4_2.pdf",
+        "title": "710KB)"
+      },
+      {
+        "uri": "https://www.fukushi.metro.tokyo.lg.jp/kodomo/kosodate/018/index.files/018youkou.pdf",
+        "title": "018サポート・チラシ（英語版）(PDF:1"
+      },
+      {
+        "uri": "https://www.fukushi.metro.tokyo.lg.jp/kodomo/kosodate/018/index.files/018youryou.pdf",
+        "title": "450KB)"
+      }
+    ],
+    "localGovernmentLink": {
+      "uri": "https://www.fukushi.metro.tokyo.lg.jp/kodomo/kosodate/018/index.html",
+      "title": "018サポート"
+    },
+    "formLink": [
+      {
+        "uri": "https://018support.metro.tokyo.lg.jp/",
+        "title": "https://018support.metro.tokyo.lg.jp/"
+      }
+    ],
+    "contact": {
+      "contactName": "東京都018サポート給付金コールセンター",
+      "contactPhone": "0120-056-018",
+      "contactEx": null,
+      "contactEmail": null,
+      "contactUrl": null,
+      "contactComment": null,
+      "zipCode": null,
+      "contactAddress": null
+    },
+    "area": {
+      "areaCode": "130001;東京都",
+      "areaText": null
+    },
+    "class": 1,
+    "remarks": null,
+    "basicInformation": {
+      "psid": "psid3.0+8000020130001+1+UM58",
+      "organization": "8000020130001",
+      "compartment": "福祉局子供・子育て支援部",
+      "compartmentCode": null,
+      "institutionType": 1
+    },
+    "updateDate": null,
+    "odInformation": {
+      "updateDate": "2024-11-08",
+      "updater": "東京都",
+      "content": "新規登録"
+    },
+    "regulation": {
+      "regulationName": null,
+      "regulationArticle": null
+    },
+    "tag": {
+      "categoryCode": [
+        "004"
+      ],
+      "targetCode": [
+        "087"
+      ],
+      "contentsCode": [
+        "081"
+      ]
+    },
+    "useConsiderationFlag": false
+  }
+]

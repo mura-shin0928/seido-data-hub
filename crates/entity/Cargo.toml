@@ -1,0 +1,9 @@
+[package]
+name = "entity"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+sea-orm = { version = "2", default-features = false, features = ["macros", "with-json", "with-chrono", "postgres-array", "with-uuid"] }
