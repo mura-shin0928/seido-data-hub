@@ -5,4 +5,5 @@ members = ["crates/domain", "crates/entity", "crates/migration", "crates/pipelin
 [workspace.package]
 edition = "2024"
 rust-version = "1.94"
+license = "MIT OR Apache-2.0"
 publish = false

@@ -47,3 +47,8 @@ TEST_DATABASE_URL=postgres://postgres:postgres@localhost:55432/seido_data_hub_te
 ```bash
 sea-orm-cli generate entity -u "$DATABASE_URL" -o crates/entity/src --lib --ignore-tables seaql_migrations
 ```
+
+## ライセンス
+
+コードは [MIT](LICENSE-MIT) または [Apache-2.0](LICENSE-APACHE) のどちらかを選んで利用できます。
+データは上記「データの出典」のとおり CC BY 4.0 です。
