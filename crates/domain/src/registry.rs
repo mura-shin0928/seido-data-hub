@@ -101,6 +101,8 @@ pub struct Imported {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ParseError {
+    #[error("JSON として解釈できない: {source}")]
+    InvalidJson { source: serde_json::Error },
     #[error("JSON のトップレベルが配列ではない")]
     NotAnArray,
     #[error("{index} 行目を読めない: {source}")]
@@ -118,8 +120,8 @@ pub enum ParseError {
 ///
 /// 同じ自治体・同じUM・同じURLの行も psid は別で、中身も違う（予防接種の種類ごと等）ので畳まない。
 pub fn parse(json: &str) -> Result<Imported, ParseError> {
-    let Value::Array(rows) = serde_json::from_str::<Value>(json)
-        .map_err(|source| ParseError::Record { index: 0, source })?
+    let Value::Array(rows) =
+        serde_json::from_str::<Value>(json).map_err(|source| ParseError::InvalidJson { source })?
     else {
         return Err(ParseError::NotAnArray);
     };
@@ -128,8 +130,8 @@ pub fn parse(json: &str) -> Result<Imported, ParseError> {
     let mut programs = Vec::with_capacity(rows.len());
 
     for (index, row) in rows.into_iter().enumerate() {
-        let record: Record = serde_json::from_value(row.clone())
-            .map_err(|source| ParseError::Record { index, source })?;
+        let record =
+            Record::deserialize(&row).map_err(|source| ParseError::Record { index, source })?;
 
         let um = um_from_psid(&record.basic_information.psid).ok_or_else(|| ParseError::Psid {
             index,
@@ -328,6 +330,13 @@ mod tests {
         assert_eq!(age_min_months(&bound(Some(1), Some(6)), &NONE), Some(18));
         assert_eq!(age_min_months(&NONE, &bound(Some(1), None)), Some(12));
         assert_eq!(age_min_months(&NONE, &NONE), None);
+    }
+
+    #[test]
+    fn broken_json_is_not_blamed_on_a_row() {
+        // 途中で切れた JSON は、行の読み取り失敗（Record）ではなく全体の失敗として返す
+        let err = parse(r#"[{"basicInformation": "#).unwrap_err();
+        assert!(matches!(err, ParseError::InvalidJson { .. }), "{err:?}");
     }
 
     #[test]
