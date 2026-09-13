@@ -37,7 +37,8 @@ pub async fn import(db: &DatabaseConnection, imported: Imported) -> anyhow::Resu
     };
     let txn = db.begin().await?;
 
-    // imported.areas は都道府県が先に並んでいるので、parent_code の外部キーをそのまま満たす
+    // parent_code の外部キーは文の終わりに確かめられるので、1文で入れる限り都道府県と市区町村の並び順は問わない。
+    // 文を分けて入れるようにするなら、都道府県を先に入れる必要がある
     areas::Entity::insert_many(imported.areas.into_iter().map(area_model))
         .on_conflict(
             OnConflict::column(areas::Column::Code)

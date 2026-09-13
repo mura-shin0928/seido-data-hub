@@ -94,7 +94,6 @@ pub struct ImportedProgram {
 
 #[derive(Debug)]
 pub struct Imported {
-    /// 都道府県が先、市区町村が後（parent_code の外部キーを満たす順）。
     pub areas: Vec<ImportedArea>,
     pub programs: Vec<ImportedProgram>,
 }
@@ -193,7 +192,7 @@ fn build_areas(names: BTreeMap<String, String>) -> Vec<ImportedArea> {
         .map(|code| (&code[..2], code.as_str()))
         .collect();
 
-    let mut areas: Vec<ImportedArea> = names
+    names
         .iter()
         .map(|(code, name)| ImportedArea {
             code: code.clone(),
@@ -202,9 +201,7 @@ fn build_areas(names: BTreeMap<String, String>) -> Vec<ImportedArea> {
                 .then(|| prefectures.get(&code[..2]).map(|p| p.to_string()))
                 .flatten(),
         })
-        .collect();
-    areas.sort_by_key(|area| (area.parent_code.is_some(), area.code.clone()));
-    areas
+        .collect()
 }
 
 fn total_months(bound: &AgeBound) -> Option<i32> {
@@ -293,13 +290,20 @@ mod tests {
             ("131016".to_string(), "千代田区".to_string()),
         ]);
         let areas = build_areas(names);
-        assert_eq!(areas[0].code, "130001", "都道府県が先に来る");
-        assert_eq!(areas[0].parent_code, None);
-        assert!(
-            areas[1..]
+        assert_eq!(areas.len(), 3);
+
+        // 並び順には頼らず、コードで探す
+        let parent_of = |code: &str| {
+            areas
                 .iter()
-                .all(|a| a.parent_code.as_deref() == Some("130001"))
-        );
+                .find(|a| a.code == code)
+                .unwrap_or_else(|| panic!("{code} が無い"))
+                .parent_code
+                .as_deref()
+        };
+        assert_eq!(parent_of("130001"), None);
+        assert_eq!(parent_of("132101"), Some("130001"));
+        assert_eq!(parent_of("131016"), Some("130001"));
     }
 
     #[test]
