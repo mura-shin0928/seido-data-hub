@@ -42,6 +42,8 @@ curl 'http://127.0.0.1:3000/v1/areas/132101/programs?age_months=6&category=003'
 
 `import-registry` は既定で東京都のサーバーから JSON（約90MB）を取得する。手元のファイルを使うときは
 `--source <path>` を渡す。psid で上書きするので何度流してもよい。
+タグの値は3桁のコードにそろえて入れ（`"002，003"` → `002` と `003`、`"86"` → `086`）、
+タグの一覧に無いコードは警告としてログに出す（取り込みは止めない）。
 
 テスト（統合テストは `TEST_DATABASE_URL` のデータベースを毎回作り直す）:
 
@@ -63,6 +65,7 @@ sea-orm-cli generate entity -u "$DATABASE_URL" -o crates/entity/src --lib --igno
 | `GET /v1/areas` | 自治体の一覧（code / name / parent_code） |
 | `GET /v1/areas/{code}/programs?age_months=&category=` | その自治体と都道府県の制度（市区町村が先、UM 順）。月齢の上下限が無い制度はどの月齢でも返す |
 | `GET /v1/programs/{id}` | 1件の詳細（レジストリの行 `registry` 込み） |
+| `GET /v1/tags` | タグのコードと名前（`categories` / `targets` / `contents`。レジストリ README §3） |
 
 データは `{"data": ..., "attribution": {...}}` で返し、`attribution` に出典表記（CC BY 4.0）を入れる。
 エラーは `{"error": {"message": ...}}`。

@@ -10,6 +10,7 @@ publish.workspace = true
 anyhow = "1"
 axum = { version = "0.8", features = ["macros"] }
 chrono = { version = "0.4", default-features = false, features = ["serde"] }
+domain = { version = "0.1.0", path = "../domain" }
 entity = { version = "0.1.0", path = "../entity" }
 lambda_http = "1"
 sea-orm = { version = "2", features = ["sqlx-postgres", "runtime-tokio-rustls", "macros", "with-json", "with-chrono", "with-uuid", "postgres-array"] }
@@ -19,7 +20,6 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 uuid = { version = "1", features = ["serde"] }
 
 [dev-dependencies]
-domain = { path = "../domain" }
 http-body-util = "0.1"
 migration = { path = "../migration" }
 pipeline = { path = "../pipeline" }

@@ -7,6 +7,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use chrono::{DateTime, FixedOffset};
+use domain::tags::{self, Tag};
 use entity::{areas, programs};
 use sea_orm::sea_query::Expr;
 use sea_orm::{
@@ -21,6 +22,7 @@ pub fn router(db: DatabaseConnection) -> Router {
         .route("/v1/areas", get(list_areas))
         .route("/v1/areas/{code}/programs", get(list_programs))
         .route("/v1/programs/{id}", get(get_program))
+        .route("/v1/tags", get(list_tags))
         .fallback(|| async { ApiError::NotFound("エンドポイントが無い") })
         .with_state(db)
 }
@@ -203,6 +205,22 @@ async fn get_program(
         .await?
         .ok_or(NOT_FOUND)?;
     Ok(body(program_view(program)))
+}
+
+#[derive(Debug, Serialize)]
+struct TagsView {
+    categories: &'static [Tag],
+    targets: &'static [Tag],
+    contents: &'static [Tag],
+}
+
+/// タグのコードと名前。制度の一覧はコードだけを返すので、名前はここから引く。
+async fn list_tags() -> impl IntoResponse {
+    body(TagsView {
+        categories: tags::CATEGORIES,
+        targets: tags::TARGETS,
+        contents: tags::CONTENTS,
+    })
 }
 
 #[derive(Debug)]

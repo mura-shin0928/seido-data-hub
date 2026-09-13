@@ -126,6 +126,21 @@ async fn program_detail_has_the_registry_row() {
 }
 
 #[tokio::test]
+async fn tags_are_listed_with_names() {
+    let Some(db) = db().await else { return };
+    let (status, body) = get(db, "/v1/tags").await;
+
+    assert_eq!(status, StatusCode::OK);
+    let len = |key: &str| body["data"][key].as_array().unwrap().len();
+    assert_eq!(len("categories"), 33);
+    assert_eq!(len("targets"), 18);
+    assert_eq!(len("contents"), 8);
+    assert_eq!(body["data"]["categories"][2]["code"], "002");
+    assert_eq!(body["data"]["categories"][2]["name"], "妊娠・出産");
+    assert_eq!(body["attribution"]["license"], "CC BY 4.0");
+}
+
+#[tokio::test]
 async fn errors_are_json() {
     let Some(db) = db().await else { return };
     for (uri, expected) in [
