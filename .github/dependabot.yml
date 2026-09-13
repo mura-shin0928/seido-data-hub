@@ -1,0 +1,11 @@
+version: 2
+updates:
+  # workflow の action は SHA で固定しているので、SHA と行末のバージョンのコメントを Dependabot に上げてもらう
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      timezone: Asia/Tokyo
+    groups:
+      github-actions:
+        patterns: ["*"]
