@@ -29,6 +29,13 @@ async fn main() -> anyhow::Result<()> {
         Command::ImportRegistry { source } => {
             let json = import_registry::load_source(&source).await?;
             let imported = domain::registry::parse(&json)?;
+            // 元データの誤りなので取り込みは止めない。直すのは元データ側
+            for tag in &imported.unknown_tags {
+                eprintln!(
+                    "警告: タグの一覧に無いコード psid={} column={} value={:?}",
+                    tag.psid, tag.column, tag.value
+                );
+            }
             let counts = import_registry::import(&db, imported).await?;
             println!(
                 "取り込み完了: 自治体 {} 件 / 制度 {} 件",
