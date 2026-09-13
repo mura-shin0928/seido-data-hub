@@ -8,6 +8,8 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::tags;
+
 /// 取り込み元の既定URL（0〜6歳、2025-08-20時点で更新停止）。
 pub const DEFAULT_SOURCE_URL: &str = "https://data.storage.data.metro.tokyo.lg.jp/digitalservice/130001_kosodateshienseido_tokyo.json";
 
@@ -96,6 +98,17 @@ pub struct ImportedProgram {
 pub struct Imported {
     pub areas: Vec<ImportedArea>,
     pub programs: Vec<ImportedProgram>,
+    /// タグの一覧に無いコード。取り込みは止めず、呼び出し側でログに出す
+    pub unknown_tags: Vec<UnknownTag>,
+}
+
+/// 正規化してもタグの一覧（README §3）に無いコード。別のタグのコードが入っている等、元データの誤り。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownTag {
+    pub psid: String,
+    /// `category_codes` / `target_codes` / `content_codes`
+    pub column: &'static str,
+    pub value: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -127,6 +140,7 @@ pub fn parse(json: &str) -> Result<Imported, ParseError> {
 
     let mut area_names: BTreeMap<String, String> = BTreeMap::new();
     let mut programs = Vec::with_capacity(rows.len());
+    let mut unknown_tags = Vec::new();
 
     for (index, row) in rows.into_iter().enumerate() {
         let record =
@@ -143,17 +157,34 @@ pub fn parse(json: &str) -> Result<Imported, ParseError> {
             })?;
         area_names.entry(area_code.clone()).or_insert(area_name);
 
+        let psid = record.basic_information.psid;
+        let tag = record.tag;
+        let category_codes = normalize_codes(tag.category_code.unwrap_or_default());
+        let target_codes = normalize_codes(tag.target_code.unwrap_or_default());
+        let content_codes = normalize_codes(tag.contents_code);
+        for (column, known, codes) in [
+            ("category_codes", tags::CATEGORIES, &category_codes),
+            ("target_codes", tags::TARGETS, &target_codes),
+            ("content_codes", tags::CONTENTS, &content_codes),
+        ] {
+            unknown_tags.extend(unknown_codes(known, codes).map(|value| UnknownTag {
+                psid: psid.clone(),
+                column,
+                value: value.clone(),
+            }));
+        }
+
         let target = &record.target;
         programs.push(ImportedProgram {
-            psid: record.basic_information.psid,
+            psid,
             um,
             area_code,
             canonical_name: record.institution_name.canonical_name,
             short_name: record.institution_name.short_name,
             source_url: record.local_government_link.uri,
-            category_codes: record.tag.category_code.unwrap_or_default(),
-            target_codes: record.tag.target_code.unwrap_or_default(),
-            content_codes: record.tag.contents_code,
+            category_codes,
+            target_codes,
+            content_codes,
             age_min_months: age_min_months(&target.greater_than_or_equal_to, &target.greater_than),
             age_max_months: age_max_months(&target.less_than, &target.less_than_or_equal_to),
             registry: row,
@@ -163,7 +194,42 @@ pub fn parse(json: &str) -> Result<Imported, ParseError> {
     Ok(Imported {
         areas: build_areas(area_names),
         programs,
+        unknown_tags,
     })
+}
+
+/// タグの値を3桁のコードの並びにそろえる。
+///
+/// 元データには `"002，003"`（全角読点で1要素）・`"027 "`（末尾空白）・`"86"`（2桁）がある。
+/// 読点で分け、前後の空白（全角含む）を除き、数字だけで3桁未満なら0埋めする。空は捨て、重複は最初の1つを残す。
+fn normalize_codes(values: Vec<String>) -> Vec<String> {
+    let mut codes: Vec<String> = Vec::with_capacity(values.len());
+    for value in &values {
+        for part in value.split([',', '，', '、']) {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+            let code = if part.len() < 3 && part.bytes().all(|b| b.is_ascii_digit()) {
+                format!("{part:0>3}")
+            } else {
+                part.to_string()
+            };
+            if !codes.contains(&code) {
+                codes.push(code);
+            }
+        }
+    }
+    codes
+}
+
+fn unknown_codes<'a>(
+    known: &'static [tags::Tag],
+    codes: &'a [String],
+) -> impl Iterator<Item = &'a String> {
+    codes
+        .iter()
+        .filter(move |code| !tags::contains(known, code))
 }
 
 /// `psid3.0+3000020132101+1+UM24` → `UM24`
@@ -343,6 +409,77 @@ mod tests {
         assert!(matches!(err, ParseError::InvalidJson { .. }), "{err:?}");
     }
 
+    fn strings(values: &[&str]) -> Vec<String> {
+        values.iter().map(|v| v.to_string()).collect()
+    }
+
+    #[test]
+    fn codes_are_split_trimmed_and_padded() {
+        assert_eq!(normalize_codes(strings(&["002，003"])), ["002", "003"]);
+        assert_eq!(normalize_codes(strings(&["027 "])), ["027"]);
+        assert_eq!(normalize_codes(strings(&["86"])), ["086"]);
+        assert_eq!(
+            normalize_codes(strings(&["\u{3000}001、 002,", "002", ""])),
+            ["001", "002"]
+        );
+        // 数字でないものは埋めずに残し、一覧との照合（警告）に回す
+        assert_eq!(normalize_codes(strings(&["x"])), ["x"]);
+    }
+
+    /// 本番で見つかった誤記（小平市・武蔵野市・青梅市・北区）を、サンプルの行に入れ直して読む。
+    #[test]
+    fn registry_typos_are_normalized_and_misplaced_codes_are_reported() {
+        let json = include_str!("../tests/fixtures/registry_sample.json");
+        let mut rows: Vec<Value> = serde_json::from_str(json).unwrap();
+        let base = rows[0].clone();
+        let cases = [
+            ("小平市", Some(vec!["002，003"]), Some(vec!["086"])),
+            ("武蔵野市", Some(vec!["027 "]), Some(vec!["087"])),
+            ("青梅市", Some(vec!["002"]), Some(vec!["86"])),
+            ("北区", Some(vec!["087"]), Some(vec!["079"])),
+            ("タグ無し", None, None),
+        ];
+        rows = cases
+            .iter()
+            .enumerate()
+            .map(|(i, (_, category, target))| {
+                let mut row = base.clone();
+                row["basicInformation"]["psid"] =
+                    format!("psid3.0+3000020132101+{}+UM{}", i + 1, i + 1).into();
+                row["tag"]["categoryCode"] = serde_json::to_value(category).unwrap();
+                row["tag"]["targetCode"] = serde_json::to_value(target).unwrap();
+                row
+            })
+            .collect();
+
+        let imported = parse(&serde_json::to_string(&rows).unwrap()).unwrap();
+        let codes = |i: usize| {
+            let p = &imported.programs[i];
+            (p.category_codes.clone(), p.target_codes.clone())
+        };
+        assert_eq!(codes(0), (strings(&["002", "003"]), strings(&["086"])));
+        assert_eq!(codes(1), (strings(&["027"]), strings(&["087"])));
+        assert_eq!(codes(2), (strings(&["002"]), strings(&["086"])));
+        assert_eq!(codes(4), (vec![], vec![]));
+
+        let north = &imported.programs[3].psid;
+        assert_eq!(
+            imported.unknown_tags,
+            [
+                UnknownTag {
+                    psid: north.clone(),
+                    column: "category_codes",
+                    value: "087".into(),
+                },
+                UnknownTag {
+                    psid: north.clone(),
+                    column: "target_codes",
+                    value: "079".into(),
+                },
+            ]
+        );
+    }
+
     #[test]
     fn parses_a_registry_row() {
         let json = include_str!("../tests/fixtures/registry_sample.json");
@@ -361,6 +498,7 @@ mod tests {
         assert_eq!(birth.area_code, "132101");
         assert_eq!(birth.canonical_name, "出生届");
         assert_eq!(birth.content_codes, vec!["077"]);
+        assert!(imported.unknown_tags.is_empty());
         assert_eq!(
             birth.registry["basicInformation"]["psid"],
             birth.psid.as_str()
