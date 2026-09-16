@@ -1,7 +1,7 @@
 //! Router を実際の Postgres に向けて叩く。自治体の解決・絞り込み・並び順は SQL で決まるため。
 //!
 //! `TEST_DATABASE_URL` のデータベースは作り直す（本番の接続先を入れないこと）。未設定ならスキップする。
-//! フィクスチャ: 小金井市の UM24 児童手当（003・0〜36か月未満）と UM3 出生届（002・月齢なし）、東京都の UM58（004・0か月以上）。
+//! フィクスチャ: 渋谷区の UM24 児童手当（003・0〜36か月未満）と UM3 出生届（002・月齢なし）、東京都の UM58（004・0か月以上）。
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -69,13 +69,13 @@ async fn areas_are_listed_with_attribution() {
 #[tokio::test]
 async fn municipality_includes_its_prefecture() {
     let Some(db) = db().await else { return };
-    let (status, body) = get(db, "/v1/areas/132101/programs").await;
+    let (status, body) = get(db, "/v1/areas/131130/programs").await;
 
     assert_eq!(status, StatusCode::OK);
     // 市区町村が先、UM は数値順（UM3 が UM24 より前）
     assert_eq!(
         ums(&body),
-        [("132101", "UM3"), ("132101", "UM24"), ("130001", "UM58")]
+        [("131130", "UM3"), ("131130", "UM24"), ("130001", "UM58")]
     );
     assert!(
         body["data"][0].get("registry").is_none(),
@@ -95,24 +95,24 @@ async fn prefecture_has_only_its_own_programs() {
 async fn age_filter_keeps_programs_without_bounds() {
     let Some(db) = db().await else { return };
     // 36か月は児童手当（36か月未満）の外。月齢の無い出生届は残る
-    let (_, body) = get(db.clone(), "/v1/areas/132101/programs?age_months=36").await;
-    assert_eq!(ums(&body), [("132101", "UM3"), ("130001", "UM58")]);
+    let (_, body) = get(db.clone(), "/v1/areas/131130/programs?age_months=36").await;
+    assert_eq!(ums(&body), [("131130", "UM3"), ("130001", "UM58")]);
 
-    let (_, body) = get(db, "/v1/areas/132101/programs?age_months=35").await;
+    let (_, body) = get(db, "/v1/areas/131130/programs?age_months=35").await;
     assert_eq!(ums(&body).len(), 3);
 }
 
 #[tokio::test]
 async fn category_filter() {
     let Some(db) = db().await else { return };
-    let (_, body) = get(db, "/v1/areas/132101/programs?category=003").await;
-    assert_eq!(ums(&body), [("132101", "UM24")]);
+    let (_, body) = get(db, "/v1/areas/131130/programs?category=003").await;
+    assert_eq!(ums(&body), [("131130", "UM24")]);
 }
 
 #[tokio::test]
 async fn program_detail_has_the_registry_row() {
     let Some(db) = db().await else { return };
-    let (_, list) = get(db.clone(), "/v1/areas/132101/programs").await;
+    let (_, list) = get(db.clone(), "/v1/areas/131130/programs").await;
     let id = list["data"][0]["id"].as_str().unwrap();
 
     let (status, body) = get(db, &format!("/v1/programs/{id}")).await;
@@ -151,11 +151,11 @@ async fn errors_are_json() {
             StatusCode::NOT_FOUND,
         ),
         (
-            "/v1/areas/132101/programs?age_months=abc",
+            "/v1/areas/131130/programs?age_months=abc",
             StatusCode::BAD_REQUEST,
         ),
         (
-            "/v1/areas/132101/programs?age_months=-1",
+            "/v1/areas/131130/programs?age_months=-1",
             StatusCode::BAD_REQUEST,
         ),
         ("/nope", StatusCode::NOT_FOUND),

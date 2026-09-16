@@ -5,7 +5,7 @@
       "shortName": "児童手当"
     },
     "summary": "家庭における生活の安定と、これからの社会を担うお子さんの健やかな成長のために、高校生年代までの児童（0歳から18歳に達する日以後の最初の3月31日までの間にある子）を養育している人に、児童手当を支給します。",
-    "description": "児童手当制度について\n更新日：2024年6月24日\n〇児童手当の令和６年度制度改正について\n〇児童手当制度について（改正前）\n\n児童手当法の一部改正により制度の入部が変更されます\nhttps://www.city.koganei.lg.jp/smph/kosodatekyoiku/N84/kakusyuteate/jidoteate/teatekaisei.html\n〇制度の変更点　〇申請案内の送付　〇手当の受給に必要となる申請等",
+    "description": "児童手当制度について\n更新日：2024年6月24日\n〇児童手当の令和６年度制度改正について\n〇児童手当制度について（改正前）\n\n児童手当法の一部改正により制度の入部が変更されます\nhttps://www.city.example.jp/smph/kosodatekyoiku/N84/kakusyuteate/jidoteate/teatekaisei.html\n〇制度の変更点　〇申請案内の送付　〇手当の受給に必要となる申請等",
     "target": {
       "targetPersons": "高校生年代（18歳に達する日以後の最初の3月31日）までのお子さんを養育している方が対象です。\nお子さんを養育している父母、または未成年後見人の場合:原則として、お子さんが日本国内に住んでいる場合に手当を支給します。\nお子さんが留学を理由に海外に住んでおり、以下の要件を満たしている場合は、例外として、そのお子さんの分の手当を受け取ることができます。\n1.日本国内に住所を有しなくなった前日までに日本国内に継続して3年を超えて住所を有していたこと\n2.教育を受けることを目的として海外に居住しており、父母（未成年後見人がいる場合はその未成年後見人）と同居していないこと\n3.日本国内に住所を有しなくなった日から3年以内であること\n※その他、短期間留学していて日本に帰国し、再び3年以内に留学する場合などは、上記の要件を満たしていなくても、手当を受け取れる場合があります。\n両親が離婚協議中で別居している場合:父母が、離婚協議中で別居している場合は、お子さんと同居している方を優先して支給する場合があります。\n父母等が海外に住んでいる場合:父母等が海外に住んでいる場合、その父母が、日本国内に住むお子さんを養育している人を指定すれば、指定された方に手当を支給します。お子さんの住所のある市区町村に「父母指定者指定届」を提出して、認定を受けてください。\n※ただし、単身赴任の場合は、これまでどおり、お子さんの生活費を主に負担している方に支給します。\n未成年後見人がいる場合:お子さんを養育している未成年後見人がいる場合は、未成年後見人に手当を支給します。\nお子さんが施設に入所している場合や里親などに委託されている場合:お子さんが施設に入所している場合や里親などに委託されている（預けられている）場合は、原則として、その施設の設置者や里親などに手当を支給します。",
       "lessThan": {
@@ -54,7 +54,7 @@
     "holiday": null,
     "utilization": null,
     "procedurePersons": null,
-    "procedureMethod": "児童手当制度について\nhttps://www.city.koganei.lg.jp/smph/kosodatekyoiku/N84/kakusyuteate/jidoteate/jidouteateseido1.html",
+    "procedureMethod": "児童手当制度について\nhttps://www.city.example.jp/smph/kosodatekyoiku/N84/kakusyuteate/jidoteate/jidouteateseido1.html",
     "procedurePeriod": {
       "fromYMD": null,
       "fromHM": null,
@@ -63,7 +63,7 @@
       "conditions": null
     },
     "electronicSubmission": false,
-    "belongings": "児童手当制度について\nhttps://www.city.koganei.lg.jp/smph/kosodatekyoiku/N84/kakusyuteate/jidoteate/jidouteateseido1.html",
+    "belongings": "児童手当制度について\nhttps://www.city.example.jp/smph/kosodatekyoiku/N84/kakusyuteate/jidoteate/jidouteateseido1.html",
     "procedureDocumentsCode": {
       "code": null,
       "others": null
@@ -71,29 +71,29 @@
     "procedureCounter": null,
     "relatedLink": [],
     "localGovernmentLink": {
-      "uri": "https://www.city.koganei.lg.jp/smph/kosodatekyoiku/N84/kakusyuteate/jidoteate/jidouteateseidogaiyo.html",
+      "uri": "https://www.city.example.jp/smph/kosodatekyoiku/N84/kakusyuteate/jidoteate/jidouteateseidogaiyo.html",
       "title": "児童手当制度概要"
     },
     "formLink": [],
     "contact": {
       "contactName": "子育て支援課手当助成係",
-      "contactPhone": "042-387-9839",
+      "contactPhone": "000-0000-0001",
       "contactEx": null,
-      "contactEmail": "s050599(at)koganei-shi.jp\n注記：迷惑メール対策のため、メールアドレスの表記を一部変更しております。お手数ですが、メール送信の際は(at)を@に置き換えてご利用ください。\nまた、お使いの端末やメールサービスの迷惑メール対策等により、回答メールが受信できなかったり、迷惑メールフォルダに格納されたりする場合があります。「@koganei-shi.jp」からメールを受信できるように設定してください。",
+      "contactEmail": "s050599(at)test-city.example.jp\n注記：迷惑メール対策のため、メールアドレスの表記を一部変更しております。お手数ですが、メール送信の際は(at)を@に置き換えてご利用ください。\nまた、お使いの端末やメールサービスの迷惑メール対策等により、回答メールが受信できなかったり、迷惑メールフォルダに格納されたりする場合があります。「@test-city.example.jp」からメールを受信できるように設定してください。",
       "contactUrl": null,
       "contactComment": null,
       "zipCode": null,
       "contactAddress": null
     },
     "area": {
-      "areaCode": "132101;小金井市",
+      "areaCode": "131130;渋谷区",
       "areaText": null
     },
     "class": 1,
     "remarks": null,
     "basicInformation": {
-      "psid": "psid3.0+3000020132101+1+UM24",
-      "organization": "3000020132101",
+      "psid": "psid3.0+3000020131130+1+UM24",
+      "organization": "3000020131130",
       "compartment": "子育て支援課手当助成係",
       "compartmentCode": null,
       "institutionType": 1
@@ -101,7 +101,7 @@
     "updateDate": "2012-04-01",
     "odInformation": {
       "updateDate": "2024-07-04",
-      "updater": "小金井市",
+      "updater": "渋谷区",
       "content": "新規登録"
     },
     "regulation": {
@@ -127,7 +127,7 @@
       "shortName": "出生届"
     },
     "summary": "出生届とは、生まれてきたお子さんの氏名等を戸籍に記載するための手続きです。\n戸籍に記載されることで、生まれてきたお子さんの親族関係が公的に証明されます。\nあわせて、母子健康手帳に出生届出済証明を行います。",
-    "description": "出生届\n更新日：2024年3月1日\n\nお子さまが生まれたときに必要な届出です。\n\n届出期間\n生まれた日から14日以内にお届けください。（生まれた日を1日目として数えます。）14日目が市役所の閉庁日（土日・祝日）にあたる場合は、翌開庁日までにお届けください。\n国外で生まれた場合は3ヵ月以内です。なお、国外で出生し、外国籍も取得された場合は国籍留保の届出も必要です。\n\n届出地\n子の本籍地または届出人の所在地の市区町村役場です。出生地の市区町村役場でも届出ができます。\n\n届出人\n原則として、父または母です。（父母両方が届出人になることもできます。）\n父母が離婚しているか未婚の場合は母です。\n\n届出に必要なもの\n出生届　1通\n　出生届書（医師等により右半分の「出生証明書」に記入済みのもの）が医療機関等で渡されますので、左半分（届出人欄に署名が必要）にご記入の上、お届けください。\n　命名は常用漢字、人名用漢字、ひらがな、カタカナを使用してください。\n　名前に使える漢字については、外部サイトへリンク　新規ウインドウで開きます。こちら（外部サイト）;https://www.moj.go.jp/MINJI/minji86.htmlをご参照ください。\n\n母子健康手帳\n　出生届出済証明を行いますので、ご持参ください。当日ご持参が難しい場合は、後日でも可能です。（市役所の開庁日に市民課戸籍係にお持ちください。）\n　出生届出済証明は、出生届を提出した市区町村役場でしかできませんのでご注意ください。\n\n届出と同日にできる手続（夜間休日窓口を除く）\n出産育児一時金請求書の市区町村長証明の発行（社会保険加入者対象）\n提出先で用意されている上記請求書用紙をお持ちください。「市区町村長が証明するところ」欄に証明します。（手数料は無料です）\n運転免許証、パスポートなどの本人確認書類;https://www.city.koganei.lg.jp/smph/kurashi/410/zyumininkankoseki/413/shimin29.htmlをお持ちください。\n父母以外の方が来庁された場合は、父または母の委任状と来庁された方の本人確認書類;https://www.city.koganei.lg.jp/smph/kurashi/410/zyumininkankoseki/413/shimin29.htmlが必要です。\n届書に記入された住所及び本籍が小金井市の方は、休日開庁時でも発行できる場合があります。\n\n他部署での手続き\n小金井市にお住まいの方\n\n乳幼児医療費助成医療証交付申請;https://www.city.koganei.lg.jp/smph/kosodatekyoiku/N84/iryohi/yoji_iryo/kosodateshien08.html\n児童手当申請;https://www.city.koganei.lg.jp/smph/kosodatekyoiku/N84/kakusyuteate/jidoteate/jidouteateseidogaiyo.html\n\n小金井市で国民健康保険に加入の方\n\n子どもの国民健康保険の加入;https://www.city.koganei.lg.jp/smph/kurashi/427/shikaku/sikakuidounado.html\n出産育児一時金の申請;https://www.city.koganei.lg.jp/smph/kurashi/427/hokenkyuuhu/D030501020201125.html（子どもの母が国民健康保険に加入している場合）\n\n注意事項\n上記届出により、戸籍の記載、住民票の作成が順次行われます。\n\n夜間・休日の戸籍届出について\n夜間・休日の戸籍の届出については、こちら;https://www.city.koganei.lg.jp/smph/kurashi/410/zyumininkankoseki/412/051.htmlをご覧ください。\n\n記入例\n 出生届の記入例はこちら（PDF：204KB）;https://www.city.koganei.lg.jp/kurashi/410/zyumininkankoseki/412/syussyou.files/shussho.pdf",
+    "description": "出生届\n更新日：2024年3月1日\n\nお子さまが生まれたときに必要な届出です。\n\n届出期間\n生まれた日から14日以内にお届けください。（生まれた日を1日目として数えます。）14日目が市役所の閉庁日（土日・祝日）にあたる場合は、翌開庁日までにお届けください。\n国外で生まれた場合は3ヵ月以内です。なお、国外で出生し、外国籍も取得された場合は国籍留保の届出も必要です。\n\n届出地\n子の本籍地または届出人の所在地の市区町村役場です。出生地の市区町村役場でも届出ができます。\n\n届出人\n原則として、父または母です。（父母両方が届出人になることもできます。）\n父母が離婚しているか未婚の場合は母です。\n\n届出に必要なもの\n出生届　1通\n　出生届書（医師等により右半分の「出生証明書」に記入済みのもの）が医療機関等で渡されますので、左半分（届出人欄に署名が必要）にご記入の上、お届けください。\n　命名は常用漢字、人名用漢字、ひらがな、カタカナを使用してください。\n　名前に使える漢字については、外部サイトへリンク　新規ウインドウで開きます。こちら（外部サイト）;https://www.moj.go.jp/MINJI/minji86.htmlをご参照ください。\n\n母子健康手帳\n　出生届出済証明を行いますので、ご持参ください。当日ご持参が難しい場合は、後日でも可能です。（市役所の開庁日に市民課戸籍係にお持ちください。）\n　出生届出済証明は、出生届を提出した市区町村役場でしかできませんのでご注意ください。\n\n届出と同日にできる手続（夜間休日窓口を除く）\n出産育児一時金請求書の市区町村長証明の発行（社会保険加入者対象）\n提出先で用意されている上記請求書用紙をお持ちください。「市区町村長が証明するところ」欄に証明します。（手数料は無料です）\n運転免許証、パスポートなどの本人確認書類;https://www.city.example.jp/smph/kurashi/410/zyumininkankoseki/413/shimin29.htmlをお持ちください。\n父母以外の方が来庁された場合は、父または母の委任状と来庁された方の本人確認書類;https://www.city.example.jp/smph/kurashi/410/zyumininkankoseki/413/shimin29.htmlが必要です。\n届書に記入された住所及び本籍が渋谷区の方は、休日開庁時でも発行できる場合があります。\n\n他部署での手続き\n渋谷区にお住まいの方\n\n乳幼児医療費助成医療証交付申請;https://www.city.example.jp/smph/kosodatekyoiku/N84/iryohi/yoji_iryo/kosodateshien08.html\n児童手当申請;https://www.city.example.jp/smph/kosodatekyoiku/N84/kakusyuteate/jidoteate/jidouteateseidogaiyo.html\n\n渋谷区で国民健康保険に加入の方\n\n子どもの国民健康保険の加入;https://www.city.example.jp/smph/kurashi/427/shikaku/sikakuidounado.html\n出産育児一時金の申請;https://www.city.example.jp/smph/kurashi/427/hokenkyuuhu/D030501020201125.html（子どもの母が国民健康保険に加入している場合）\n\n注意事項\n上記届出により、戸籍の記載、住民票の作成が順次行われます。\n\n夜間・休日の戸籍届出について\n夜間・休日の戸籍の届出については、こちら;https://www.city.example.jp/smph/kurashi/410/zyumininkankoseki/412/051.htmlをご覧ください。\n\n記入例\n 出生届の記入例はこちら（PDF：204KB）;https://www.city.example.jp/kurashi/410/zyumininkankoseki/412/syussyou.files/shussho.pdf",
     "target": {
       "targetPersons": "お子さま",
       "lessThan": {
@@ -190,7 +190,7 @@
       "code": null,
       "others": null
     },
-    "procedureCounter": "届出地\n子の本籍地または届出人の所在地の市区町村役場です。出生地の市区町村役場でも届出ができます。\n\n夜間・休日の戸籍届出について;https://www.city.koganei.lg.jp/smph/kurashi/410/zyumininkankoseki/412/051.html",
+    "procedureCounter": "届出地\n子の本籍地または届出人の所在地の市区町村役場です。出生地の市区町村役場でも届出ができます。\n\n夜間・休日の戸籍届出について;https://www.city.example.jp/smph/kurashi/410/zyumininkankoseki/412/051.html",
     "relatedLink": [
       {
         "uri": "https://www.moj.go.jp/MINJI/minji86.html",
@@ -198,29 +198,29 @@
       }
     ],
     "localGovernmentLink": {
-      "uri": "https://www.city.koganei.lg.jp/smph/kurashi/410/zyumininkankoseki/412/syussyou.html",
+      "uri": "https://www.city.example.jp/smph/kurashi/410/zyumininkankoseki/412/syussyou.html",
       "title": "出生届"
     },
     "formLink": [],
     "contact": {
       "contactName": "市民課戸籍係",
-      "contactPhone": "042-387-9816",
+      "contactPhone": "000-0000-0002",
       "contactEx": null,
-      "contactEmail": "s030199@koganei-shi.jp\n",
+      "contactEmail": "s030199@test-city.example.jp\n",
       "contactUrl": null,
       "contactComment": null,
-      "zipCode": "1848504",
-      "contactAddress": "小金井市本町6-6-3"
+      "zipCode": "0000000",
+      "contactAddress": "渋谷区テスト町1-1-1"
     },
     "area": {
-      "areaCode": "132101;小金井市",
+      "areaCode": "131130;渋谷区",
       "areaText": null
     },
     "class": 1,
     "remarks": null,
     "basicInformation": {
-      "psid": "psid3.0+3000020132101+1+UM3",
-      "organization": "3000020132101",
+      "psid": "psid3.0+3000020131130+1+UM3",
+      "organization": "3000020131130",
       "compartment": "市民課戸籍係",
       "compartmentCode": null,
       "institutionType": 1
@@ -228,7 +228,7 @@
     "updateDate": "2024-03-01",
     "odInformation": {
       "updateDate": "2024-07-01",
-      "updater": "小金井市",
+      "updater": "渋谷区",
       "content": "新規登録"
     },
     "regulation": {

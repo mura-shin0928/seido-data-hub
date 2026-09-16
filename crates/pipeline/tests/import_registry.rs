@@ -56,7 +56,7 @@ async fn importing_twice_gives_the_same_rows() {
     assert_eq!(
         count(
             &db,
-            "select count(*) from areas where code = '132101' and parent_code = '130001'"
+            "select count(*) from areas where code = '131130' and parent_code = '130001'"
         )
         .await,
         1

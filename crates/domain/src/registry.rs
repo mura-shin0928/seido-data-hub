@@ -232,14 +232,14 @@ fn unknown_codes<'a>(
         .filter(move |code| !tags::contains(known, code))
 }
 
-/// `psid3.0+3000020132101+1+UM24` → `UM24`
+/// `psid3.0+3000020131130+1+UM24` → `UM24`
 fn um_from_psid(psid: &str) -> Option<String> {
     let um = psid.rsplit('+').next()?;
     let digits = um.strip_prefix("UM")?;
     (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())).then(|| um.to_string())
 }
 
-/// `132101;小金井市` → (`132101`, `小金井市`)。名前の前後の空白・タブは落とす（`檜原村\t` がある）。
+/// `131130;渋谷区` → (`131130`, `渋谷区`)。名前の前後の空白・タブは落とす（`檜原村\t` がある）。
 fn split_area(value: &str) -> Option<(String, String)> {
     let (code, name) = value.split_once(';')?;
     let code = code.trim();
@@ -327,15 +327,15 @@ mod tests {
     #[test]
     fn um_is_the_last_psid_segment() {
         assert_eq!(
-            um_from_psid("psid3.0+3000020132101+1+UM24").as_deref(),
+            um_from_psid("psid3.0+3000020131130+1+UM24").as_deref(),
             Some("UM24")
         );
         assert_eq!(
             um_from_psid("psid3.0+8000020131016+12+UM5013").as_deref(),
             Some("UM5013")
         );
-        assert_eq!(um_from_psid("psid3.0+3000020132101+1+24"), None);
-        assert_eq!(um_from_psid("psid3.0+3000020132101+1+UM"), None);
+        assert_eq!(um_from_psid("psid3.0+3000020131130+1+24"), None);
+        assert_eq!(um_from_psid("psid3.0+3000020131130+1+UM"), None);
     }
 
     #[test]
@@ -344,14 +344,14 @@ mod tests {
             split_area("133078;檜原村\t"),
             Some(("133078".to_string(), "檜原村".to_string()))
         );
-        assert_eq!(split_area("13210;小金井市"), None);
-        assert_eq!(split_area("132101"), None);
+        assert_eq!(split_area("13999;渋谷区"), None);
+        assert_eq!(split_area("131130"), None);
     }
 
     #[test]
     fn municipalities_point_to_their_prefecture() {
         let names = BTreeMap::from([
-            ("132101".to_string(), "小金井市".to_string()),
+            ("131130".to_string(), "渋谷区".to_string()),
             ("130001".to_string(), "東京都".to_string()),
             ("131016".to_string(), "千代田区".to_string()),
         ]);
@@ -368,7 +368,7 @@ mod tests {
                 .as_deref()
         };
         assert_eq!(parent_of("130001"), None);
-        assert_eq!(parent_of("132101"), Some("130001"));
+        assert_eq!(parent_of("131130"), Some("130001"));
         assert_eq!(parent_of("131016"), Some("130001"));
     }
 
@@ -445,7 +445,7 @@ mod tests {
             .map(|(i, (_, category, target))| {
                 let mut row = base.clone();
                 row["basicInformation"]["psid"] =
-                    format!("psid3.0+3000020132101+{}+UM{}", i + 1, i + 1).into();
+                    format!("psid3.0+3000020131130+{}+UM{}", i + 1, i + 1).into();
                 row["tag"]["categoryCode"] = serde_json::to_value(category).unwrap();
                 row["tag"]["targetCode"] = serde_json::to_value(target).unwrap();
                 row
@@ -486,16 +486,16 @@ mod tests {
         let imported = parse(json).expect("fixture parses");
 
         assert_eq!(imported.areas.len(), 2);
-        let koganei = imported.areas.iter().find(|a| a.code == "132101").unwrap();
-        assert_eq!(koganei.name, "小金井市");
-        assert_eq!(koganei.parent_code.as_deref(), Some("130001"));
+        let test_city = imported.areas.iter().find(|a| a.code == "131130").unwrap();
+        assert_eq!(test_city.name, "渋谷区");
+        assert_eq!(test_city.parent_code.as_deref(), Some("130001"));
 
         let birth = imported
             .programs
             .iter()
             .find(|p| p.um == "UM3")
             .expect("出生届");
-        assert_eq!(birth.area_code, "132101");
+        assert_eq!(birth.area_code, "131130");
         assert_eq!(birth.canonical_name, "出生届");
         assert_eq!(birth.content_codes, vec!["077"]);
         assert!(imported.unknown_tags.is_empty());
