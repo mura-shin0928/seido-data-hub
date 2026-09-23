@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
+use domain::extract::{self, Extracted};
 use domain::fetch::CharsetSource;
 use pipeline::fetch::{Body, Config, Fetcher, Outcome, Validators};
 use pipeline::import_registry;
@@ -21,7 +22,8 @@ enum Command {
         #[arg(long, default_value = domain::registry::DEFAULT_SOURCE_URL)]
         source: String,
     },
-    /// URL を取得して結果を表示する（DB は使わない）。robots と同一ホスト2秒の間隔を守る
+    /// URL を取得して結果を表示する（DB は使わない）。robots と同一ホスト2秒の間隔を守る。
+    /// HTML なら本文を取り出し、規則とハッシュも表示する（同じ URL を2回渡すと body_hash を比べられる）
     Fetch {
         /// 取得する URL。許可リストはここに渡したホストだけになる
         #[arg(required = true)]
@@ -93,6 +95,28 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn print_extracted(extracted: &Extracted) {
+    let hashes = &extracted.hashes;
+    println!(
+        "    規則 {}（版 {}）/ 本文 {} 文字 / リンク {} 件",
+        extracted.rule.as_str(),
+        extract::EXTRACTOR_VERSION,
+        extracted.body_text.chars().count(),
+        extracted.links.len()
+    );
+    println!("    タイトル {:?}", extracted.title);
+    println!(
+        "    更新日 {:?} / canonical {:?} / robots {:?}",
+        extracted.page_updated_on.map(|d| d.to_string()),
+        extracted.declared_canonical_url,
+        extracted.robots_meta
+    );
+    println!("    body_hash  {}", hashes.body);
+    println!("    page_hash  {}", hashes.page);
+    println!("    title_hash {}", hashes.title.as_deref().unwrap_or("-"));
+    println!("    links_hash {}", hashes.links);
+}
+
 fn print_fetch(url: &str, fetch: &pipeline::fetch::Fetch) {
     println!("{url}");
     for hop in &fetch.hops {
@@ -131,6 +155,15 @@ fn print_fetch(url: &str, fetch: &pipeline::fetch::Fetch) {
                 "    ETag {:?} / Last-Modified {:?} / Content-Type {:?}",
                 response.etag, response.last_modified, response.content_type
             );
+            if let Some(raw_hash) = &response.raw_hash {
+                println!("    raw_hash   {raw_hash}");
+            }
+            if let Body::Html(html) = &response.body {
+                print_extracted(&extract::extract(&html.text, &response.url));
+            }
+            if let Some(tag) = &response.x_robots_tag {
+                println!("    X-Robots-Tag {tag:?}");
+            }
         }
         Outcome::RobotsDenied { url } => println!("  → robots.txt で不許可: {url}"),
         Outcome::RobotsUnavailable { host_key, reason } => {

@@ -5,6 +5,7 @@
 
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -13,6 +14,7 @@ use axum::body::Body as HttpBody;
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response as HttpResponse;
+use domain::extract::{self, Rule, digest};
 use domain::urls::Rejection;
 use pipeline::fetch::{Body, Config, Fetch, Fetcher, Outcome, Response, Validators};
 use tokio::time::Instant;
@@ -475,11 +477,18 @@ async fn content_type_and_charset_are_decided_from_the_response() {
     let image = response(&image);
     assert!(matches!(&image.body, Body::Other(Some(t)) if t == "image/png"));
     assert_eq!(image.bytes, 0);
+    assert_eq!(image.raw_hash, None);
 
     let pdf = get(&fetcher, &format!("http://{CITY}/file.pdf")).await;
     assert!(matches!(&response(&pdf).body, Body::Pdf(bytes) if bytes.starts_with(b"%PDF-")));
+    assert_eq!(response(&pdf).raw_hash, Some(digest(b"%PDF-1.7\n")));
 
     let page = get(&fetcher, &format!("http://{CITY}/sjis.html")).await;
+    // raw_hash は復号する前のバイト列から作る
+    assert_eq!(
+        response(&page).raw_hash,
+        Some(digest(b"<p>\x8e\x71\x88\xe7\x82\xc4</p>"))
+    );
     match &response(&page).body {
         Body::Html(html) => {
             assert_eq!(html.text, "<p>子育て</p>");
@@ -487,6 +496,60 @@ async fn content_type_and_charset_are_decided_from_the_response() {
         }
         other => panic!("HTML として読めていない: {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn the_same_page_fetched_twice_has_the_same_body_hash() {
+    // 自治体サイトによくある形: 本文は id="main_contents"。ヘッダの時刻・script のトークン・コメントは毎回変わる
+    let count = Arc::new(AtomicU32::new(0));
+    let (fetcher, _) = serve(quick(), move |_, path, _| match path {
+        "/robots.txt" => empty(404),
+        _ => {
+            let n = count.fetch_add(1, Ordering::SeqCst);
+            reply(200)
+                .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+                .header("X-Robots-Tag", "NoArchive")
+                .body(HttpBody::from(format!(
+                    r#"<!DOCTYPE html><html><head><title>児童手当｜○○市</title>
+                    <script>var token = "t{n}";</script></head><body>
+                    <header><p>現在 10:0{n}</p><nav><a href="/">トップ</a></nav></header>
+                    <div id="main_contents"><h1>児童手当</h1>
+                    <p>中学生までの子を養育している方に支給します。</p>
+                    <a href="shinsei.html">申請</a><!-- generated {n} --></div>
+                    <footer><p>更新日：2024年3月1日</p></footer></body></html>"#
+                )))
+                .unwrap()
+        }
+    })
+    .await;
+
+    let url = format!("http://{CITY}/kosodate/teate.html");
+    let first = get(&fetcher, &url).await;
+    let second = get(&fetcher, &url).await;
+    let (first, second) = (response(&first), response(&second));
+    assert_eq!(first.x_robots_tag.as_deref(), Some("noarchive"));
+
+    // 生の応答は毎回違う
+    assert_ne!(first.raw_hash, second.raw_hash);
+
+    let [a, b] = [first, second].map(|response| match &response.body {
+        Body::Html(html) => extract::extract(&html.text, &response.url),
+        other => panic!("HTML として読めていない: {other:?}"),
+    });
+    assert_eq!(a.hashes.body, b.hashes.body);
+    assert_eq!(a.rule, Rule::IdMain);
+    assert_eq!(a.rule.as_str(), "id_main");
+    assert_eq!(
+        a.body_text,
+        "児童手当\n中学生までの子を養育している方に支給します。\n申請"
+    );
+    assert_eq!(a.links, [format!("http://{CITY}/kosodate/shinsei.html")]);
+    assert_eq!(
+        a.page_updated_on.map(|d| d.to_string()).as_deref(),
+        Some("2024-03-01")
+    );
+    // ページ全体はヘッダの時刻で変わる
+    assert_ne!(a.hashes.page, b.hashes.page);
 }
 
 #[tokio::test]

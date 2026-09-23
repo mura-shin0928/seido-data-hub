@@ -52,6 +52,9 @@ cargo run -p pipeline -- fetch https://www.city.koganei.lg.jp/kenkofukuhsi/431/k
 ```
 
 転送の各段・status・文字コードの判定元・`ETag` を表示する。`--etag` / `--last-modified` を渡すと条件付きで取得する。
+HTML なら本文を取り出し、本文コンテナを決めた規則・タイトル・ページに書かれた更新日・`rel=canonical`・リンク数と、
+5種のハッシュ（`raw_hash` / `page_hash` / `title_hash` / `body_hash` / `links_hash`）も表示する。
+同じ URL を2回渡すと、`body_hash` が再取得で変わらないかを確かめられる。
 許可リストは渡した URL のホストだけなので、それ以外のホストへの転送は追わずに転送先を表示する。
 
 テスト（統合テストは `TEST_DATABASE_URL` のデータベースを毎回作り直す）:
