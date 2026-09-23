@@ -2,3 +2,4 @@
 
 pub mod registry;
 pub mod tags;
+pub mod urls;
