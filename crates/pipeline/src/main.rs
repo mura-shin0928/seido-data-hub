@@ -2,10 +2,11 @@ use std::collections::BTreeSet;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
+use domain::canonical::Decision;
 use domain::extract::{self, Extracted};
 use domain::fetch::CharsetSource;
 use pipeline::fetch::{Body, Config, Fetcher, Outcome, Validators};
-use pipeline::import_registry;
+use pipeline::{import_registry, resources};
 
 #[derive(Parser)]
 #[command(about = "seido-data-hub のデータ取り込み・更新")]
@@ -23,7 +24,8 @@ enum Command {
         source: String,
     },
     /// URL を取得して結果を表示する（DB は使わない）。robots と同一ホスト2秒の間隔を守る。
-    /// HTML なら本文を取り出し、規則とハッシュも表示する（同じ URL を2回渡すと body_hash を比べられる）
+    /// HTML なら本文を取り出し、規則とハッシュも表示する（同じ URL を2回渡すと body_hash を比べられる）。
+    /// 代表 URL（canonical_url）とその根拠も表示する
     Fetch {
         /// 取得する URL。許可リストはここに渡したホストだけになる
         #[arg(required = true)]
@@ -117,6 +119,24 @@ fn print_extracted(extracted: &Extracted) {
     println!("    links_hash {}", hashes.links);
 }
 
+fn print_decision(decision: &Decision) {
+    println!(
+        "    代表 URL {}（根拠 {}・結び方 {}）",
+        decision.canonical_url,
+        decision.source.as_str(),
+        decision.relation.as_str()
+    );
+    if let Some(reason) = &decision.ignored_redirect {
+        println!("    採らなかった転送: {reason}");
+    }
+    if let Some(reason) = &decision.ignored_declared {
+        println!(
+            "    採らなかった canonical {:?}: {reason}",
+            decision.declared_canonical_url
+        );
+    }
+}
+
 fn print_fetch(url: &str, fetch: &pipeline::fetch::Fetch) {
     println!("{url}");
     for hop in &fetch.hops {
@@ -158,11 +178,23 @@ fn print_fetch(url: &str, fetch: &pipeline::fetch::Fetch) {
             if let Some(raw_hash) = &response.raw_hash {
                 println!("    raw_hash   {raw_hash}");
             }
-            if let Body::Html(html) = &response.body {
-                print_extracted(&extract::extract(&html.text, &response.url));
+            let extracted = match &response.body {
+                Body::Html(html) => Some(extract::extract(&html.text, &response.url)),
+                _ => None,
+            };
+            if let Some(extracted) = &extracted {
+                print_extracted(extracted);
             }
             if let Some(tag) = &response.x_robots_tag {
                 println!("    X-Robots-Tag {tag:?}");
+            }
+            // DB を使わないので、ホスト単位の判定は当てずにページ単位の検証だけで決める
+            let declared = extracted
+                .as_ref()
+                .and_then(|e| e.declared_canonical_url.as_deref());
+            match resources::decide(fetch, declared, true) {
+                Some(decision) => print_decision(&decision),
+                None => println!("    代表 URL は決めない（資源に触らない応答）"),
             }
         }
         Outcome::RobotsDenied { url } => println!("  → robots.txt で不許可: {url}"),

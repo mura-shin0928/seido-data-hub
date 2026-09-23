@@ -3,4 +3,6 @@
 pub use super::areas::Entity as Areas;
 pub use super::program_urls::Entity as ProgramUrls;
 pub use super::programs::Entity as Programs;
+pub use super::resources::Entity as Resources;
+pub use super::url_resources::Entity as UrlResources;
 pub use super::urls::Entity as Urls;
