@@ -36,10 +36,22 @@ async fn main() -> anyhow::Result<()> {
                     tag.psid, tag.column, tag.value
                 );
             }
-            let counts = import_registry::import(&db, imported).await?;
+            let outcome = import_registry::import(&db, imported).await?;
+            // 元データの誤りなので取り込みは止めない。直すのは元データ側
+            for rejected in &outcome.rejected {
+                eprintln!(
+                    "警告: URL を登録できない psid={} url={:?} 理由={}",
+                    rejected.psid, rejected.raw_url, rejected.reason
+                );
+            }
+            let counts = outcome.counts;
             println!(
-                "取り込み完了: 自治体 {} 件 / 制度 {} 件",
-                counts.areas, counts.programs
+                "取り込み完了: 自治体 {} 件 / 制度 {} 件 / URL {} 件（結び付き {} 件・登録できない URL {} 件）",
+                counts.areas,
+                counts.programs,
+                counts.urls,
+                counts.program_urls,
+                outcome.rejected.len()
             );
         }
     }
