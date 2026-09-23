@@ -45,6 +45,15 @@ curl 'http://127.0.0.1:3000/v1/areas/132101/programs?age_months=6&category=003'
 タグの値は3桁のコードにそろえて入れ（`"002，003"` → `002` と `003`、`"86"` → `086`）、
 タグの一覧に無いコードは警告としてログに出す（取り込みは止めない）。
 
+URL を1件ずつ取得して結果を見る（DB は使わない。robots.txt と同一ホスト2秒の間隔を守る）:
+
+```bash
+cargo run -p pipeline -- fetch https://www.city.koganei.lg.jp/kenkofukuhsi/431/kyujitusinryokyukyu/kyuujitu.html
+```
+
+転送の各段・status・文字コードの判定元・`ETag` を表示する。`--etag` / `--last-modified` を渡すと条件付きで取得する。
+許可リストは渡した URL のホストだけなので、それ以外のホストへの転送は追わずに転送先を表示する。
+
 テスト（統合テストは `TEST_DATABASE_URL` のデータベースを毎回作り直す）:
 
 ```bash
