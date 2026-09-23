@@ -8,6 +8,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, SystemTime};
 
+use domain::extract;
 use domain::fetch::{self, DecodedHtml, Kind, Pace, RobotsPolicy};
 use domain::urls::{self, PreparedUrl, Rejection};
 use reqwest::header::{self, HeaderMap};
@@ -15,6 +16,9 @@ use texting_robots::Robot;
 use tokio::sync::{Mutex, OnceCell};
 use tokio::time::Instant;
 use url::Url;
+
+/// reqwest の定数に無いヘッダ
+const X_ROBOTS_TAG: header::HeaderName = header::HeaderName::from_static("x-robots-tag");
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -101,9 +105,13 @@ pub struct Response {
     pub etag: Option<String>,
     pub last_modified: Option<String>,
     pub content_type: Option<String>,
+    /// `X-Robots-Tag`（記録だけ。取得の可否には使わない。§19）
+    pub x_robots_tag: Option<String>,
     pub body: Body,
     /// 受信した本文のバイト数（読まなかったときは0）
     pub bytes: u64,
+    /// 受信したバイト列（復号前）のハッシュ。HTML・PDF を読みきったときだけ（§16 の `raw_hash`）
+    pub raw_hash: Option<String>,
 }
 
 #[derive(Debug)]
@@ -169,6 +177,7 @@ struct Exchange {
     retry_after: Option<Duration>,
     body: Body,
     raw: Option<Vec<u8>>,
+    raw_hash: Option<String>,
     bytes: u64,
     elapsed: Duration,
 }
@@ -266,8 +275,11 @@ impl Fetcher {
                     etag: text(&exchange.headers, header::ETAG),
                     last_modified: text(&exchange.headers, header::LAST_MODIFIED),
                     content_type: text(&exchange.headers, header::CONTENT_TYPE),
+                    x_robots_tag: text(&exchange.headers, X_ROBOTS_TAG)
+                        .map(|value| value.trim().to_ascii_lowercase()),
                     body: exchange.body,
                     bytes: exchange.bytes,
+                    raw_hash: exchange.raw_hash,
                 });
             }
             let Some(location) = resolve_location(target, &exchange.headers) else {
@@ -420,17 +432,19 @@ impl Fetcher {
         let content_type = text(&headers, header::CONTENT_TYPE);
 
         let success = (200..300).contains(&status);
-        let (body, raw, bytes) = match read {
-            _ if !success => (Body::NotRead, None, 0),
+        let (body, raw, raw_hash, bytes) = match read {
+            _ if !success => (Body::NotRead, None, None, 0),
             Read::Robots => {
                 let (mut raw, _) = read_limited(&mut response, fetch::MAX_ROBOTS_BYTES).await?;
                 raw.truncate(fetch::MAX_ROBOTS_BYTES as usize);
                 let bytes = raw.len() as u64;
-                (Body::NotRead, Some(raw), bytes)
+                (Body::NotRead, Some(raw), None, bytes)
             }
             Read::Page => {
-                self.read_page(&mut response, content_type.as_deref())
-                    .await?
+                let (body, raw_hash, bytes) = self
+                    .read_page(&mut response, content_type.as_deref())
+                    .await?;
+                (body, None, raw_hash, bytes)
             }
         };
         Ok(Exchange {
@@ -439,6 +453,7 @@ impl Fetcher {
             retry_after,
             body,
             raw,
+            raw_hash,
             bytes,
             elapsed: started.elapsed(),
         })
@@ -448,7 +463,7 @@ impl Fetcher {
         &self,
         response: &mut reqwest::Response,
         content_type: Option<&str>,
-    ) -> Result<(Body, Option<Vec<u8>>, u64), reqwest::Error> {
+    ) -> Result<(Body, Option<String>, u64), reqwest::Error> {
         // ヘッダだけで対象外と分かれば読まない
         if let Some(Kind::Other(value)) = fetch::kind_from_header(content_type) {
             return Ok((Body::Other(value), None, 0));
@@ -465,12 +480,16 @@ impl Fetcher {
         if exceeded {
             return Ok((Body::TooLarge, None, bytes));
         }
-        let body = match fetch::classify(content_type, &raw) {
-            Kind::Html => Body::Html(fetch::decode_html(content_type, &raw)),
-            Kind::Pdf => Body::Pdf(raw),
-            Kind::Other(value) => Body::Other(value),
+        let raw_hash = extract::digest(&raw);
+        let (body, raw_hash) = match fetch::classify(content_type, &raw) {
+            Kind::Html => (
+                Body::Html(fetch::decode_html(content_type, &raw)),
+                Some(raw_hash),
+            ),
+            Kind::Pdf => (Body::Pdf(raw), Some(raw_hash)),
+            Kind::Other(value) => (Body::Other(value), None),
         };
-        Ok((body, None, bytes))
+        Ok((body, raw_hash, bytes))
     }
 }
 
