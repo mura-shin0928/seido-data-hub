@@ -39,11 +39,28 @@ pub struct Model {
 pub enum Relation {
     #[sea_orm(has_many = "super::program_urls::Entity")]
     ProgramUrls,
+    #[sea_orm(has_many = "super::url_resources::Entity")]
+    UrlResources,
 }
 
 impl Related<super::program_urls::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::ProgramUrls.def()
+    }
+}
+
+impl Related<super::url_resources::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::UrlResources.def()
+    }
+}
+
+impl Related<super::resources::Entity> for Entity {
+    fn to() -> RelationDef {
+        super::url_resources::Relation::Resources.def()
+    }
+    fn via() -> Option<RelationDef> {
+        Some(super::url_resources::Relation::Urls.def().rev())
     }
 }
 

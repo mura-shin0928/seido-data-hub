@@ -55,6 +55,8 @@ cargo run -p pipeline -- fetch https://www.city.koganei.lg.jp/kenkofukuhsi/431/k
 HTML なら本文を取り出し、本文コンテナを決めた規則・タイトル・ページに書かれた更新日・`rel=canonical`・リンク数と、
 5種のハッシュ（`raw_hash` / `page_hash` / `title_hash` / `body_hash` / `links_hash`）も表示する。
 同じ URL を2回渡すと、`body_hash` が再取得で変わらないかを確かめられる。
+代表 URL（`canonical_url`）とその根拠（恒久転送の先・検証を通った `rel=canonical`・取りに行った URL）、
+採らなかった転送や canonical の理由も表示する（DB を使わないので、ホスト単位の canonical の判定は当てない）。
 許可リストは渡した URL のホストだけなので、それ以外のホストへの転送は追わずに転送先を表示する。
 
 テスト（統合テストは `TEST_DATABASE_URL` のデータベースを毎回作り直す）:

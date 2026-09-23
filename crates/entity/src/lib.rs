@@ -5,4 +5,6 @@ pub mod prelude;
 pub mod areas;
 pub mod program_urls;
 pub mod programs;
+pub mod resources;
+pub mod url_resources;
 pub mod urls;
