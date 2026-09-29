@@ -517,3 +517,96 @@ async fn a_moved_resource_relinks_to_an_existing_resource_without_touching_it() 
         .collect();
     assert!(linked.contains(&existing.id) && linked.contains(&r.id));
 }
+
+#[tokio::test]
+async fn an_alias_that_starts_returning_404_does_not_rename_the_live_resource() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let direct = Arc::new(AtomicBool::new(false));
+    let fetcher = {
+        let direct = direct.clone();
+        serve(move |path| match path {
+            "/smph/x.html" if direct.load(Ordering::SeqCst) => empty(404),
+            "/smph/x.html" => redirect(301, "/x.html"),
+            _ => page(None),
+        })
+        .await
+    };
+    let alias = register(&db, &url("/smph/x.html")).await;
+    let canonical = register(&db, &url("/x.html")).await;
+    run(&db, &fetcher, alias, "/smph/x.html").await;
+    run(&db, &fetcher, canonical, "/x.html").await;
+    let r = resource(&db, &url("/x.html")).await;
+
+    // 別名が転送をやめて、直接 404 を返す
+    direct.store(true, Ordering::SeqCst);
+    let done = run(&db, &fetcher, alias, "/smph/x.html").await;
+    let dead = resource(&db, &url("/smph/x.html")).await;
+    assert_eq!(
+        done.resolved,
+        Some(Resolved::Relinked {
+            from_resource_id: r.id,
+            resource_id: dead.id,
+        })
+    );
+    assert_eq!(dead.state, CANDIDATE);
+    let r_after = resource(&db, &url("/x.html")).await;
+    assert_eq!(r_after.id, r.id);
+    assert_eq!(
+        (r_after.state.as_str(), r_after.consecutive_not_found),
+        ("active", 0)
+    );
+    assert_eq!(all_resources(&db).await.len(), 2);
+}
+
+#[tokio::test]
+async fn urls_redirected_to_a_soft_404_page_leave_their_resources_alone() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let broken = Arc::new(AtomicBool::new(false));
+    let fetcher = {
+        let broken = broken.clone();
+        serve(move |path| match path {
+            "/p.html" | "/q.html" if broken.load(Ordering::SeqCst) => redirect(301, "/error.html"),
+            "/error.html" => titled("ページが見つかりません｜○○市"),
+            _ => page(None),
+        })
+        .await
+    };
+    let p = register(&db, &url("/p.html")).await;
+    let q = register(&db, &url("/q.html")).await;
+    run(&db, &fetcher, p, "/p.html").await;
+    run(&db, &fetcher, q, "/q.html").await;
+    let (rp, rq) = (
+        resource(&db, &url("/p.html")).await,
+        resource(&db, &url("/q.html")).await,
+    );
+
+    broken.store(true, Ordering::SeqCst);
+    for (id, path) in [(p, "/p.html"), (q, "/q.html")] {
+        let done = run(&db, &fetcher, id, path).await;
+        assert!(
+            matches!(done.resolved, Some(Resolved::Relinked { .. })),
+            "{path}"
+        );
+    }
+    // 元の資源は改名も moved もされず、動かなかった
+    for (before, path) in [(&rp, "/p.html"), (&rq, "/q.html")] {
+        let after = resource(&db, &url(path)).await;
+        assert_eq!(after.id, before.id, "{path}");
+        assert_eq!(
+            (
+                after.state.as_str(),
+                after.consecutive_not_found,
+                after.moved_to_resource_id
+            ),
+            ("active", 0, None),
+            "{path}"
+        );
+    }
+    // 見つからなかったのは /error.html の資源
+    assert_eq!(resource(&db, &url("/error.html")).await.state, CANDIDATE);
+    assert_eq!(all_resources(&db).await.len(), 3);
+}

@@ -103,7 +103,8 @@ pub enum Resolved {
         from_resource_id: Uuid,
         into_resource_id: Uuid,
     },
-    /// 元の資源が既に `moved` だった。資源には触れず、URL を新しい代表 URL の資源に結び直した
+    /// 元の資源が既に `moved` だった、または今回の観測が `Alive` ではなかった。
+    /// 内容が動いたとは言えないので、元の資源には触れず、URL を新しい代表 URL の資源（無ければ作る）に結び直した
     Relinked {
         from_resource_id: Uuid,
         resource_id: Uuid,
@@ -117,13 +118,17 @@ pub enum Resolved {
 
 /// URL の代表 URL が前回と変わった（`Linked::Changed`）ときの扱いを決めて書く。
 ///
+/// 今回の観測が `Alive` のときだけ、内容の移動か統合として扱う。
 /// 新しい代表 URL の資源がまだ無ければ、同じ内容が動いただけなので元の資源の代表 URL を書き換える。
 /// 既にあれば、元の資源は吸収された（`moved`）ので、URL を吸収先に結ぶ。
+/// 観測が `Alive` 以外（見つからない・消えた・観測なし）、または元の資源が `moved` のときは、
+/// 元の資源に触れず、新しい代表 URL の資源に結び直す（`Relinked`）。
 pub async fn resolve_change<C: TransactionTrait>(
     db: &C,
     url_id: Uuid,
     from_resource_id: Uuid,
     decision: &Decision,
+    observation: Option<Observation>,
 ) -> anyhow::Result<Resolved> {
     let txn = db.begin().await?;
     let from = resources::Entity::find_by_id(from_resource_id)
@@ -140,8 +145,9 @@ pub async fn resolve_change<C: TransactionTrait>(
         .context("移動先の資源を読めない")?;
 
     let resolved = match target {
-        // 元の資源が `moved` なら凍結されているので、書き換えも吸収もせず、URL を新しい代表 URL に結び直す
-        _ if from.state == State::Moved.as_str() => {
+        // 元の資源が `moved`（凍結されている）か、生きているとは言えない観測なら、
+        // 書き換えも吸収もせず、URL を新しい代表 URL に結び直す
+        _ if from.state == State::Moved.as_str() || observation != Some(Observation::Alive) => {
             let (resource_id, _) = upsert_resource(&txn, decision).await?;
             upsert_url_resource(&txn, url_id, resource_id, decision.relation).await?;
             Resolved::Relinked {
@@ -267,7 +273,9 @@ pub async fn process<C: ConnectionTrait + TransactionTrait>(
                     (Some(linked), None, id)
                 }
                 Linked::Changed { resource_id, .. } => {
-                    let resolved = resolve_change(db, url_id, *resource_id, &decision).await?;
+                    let resolved =
+                        resolve_change(db, url_id, *resource_id, &decision, verdict.observation)
+                            .await?;
                     let id = match &resolved {
                         Resolved::Renamed { resource_id, .. }
                         | Resolved::Relinked { resource_id, .. } => Some(*resource_id),
