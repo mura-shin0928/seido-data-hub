@@ -5,8 +5,9 @@ use clap::{Parser, Subcommand};
 use domain::canonical::Decision;
 use domain::extract::{self, Extracted};
 use domain::fetch::CharsetSource;
+use domain::liveness::Verdict;
 use pipeline::fetch::{Body, Config, Fetcher, Outcome, Validators};
-use pipeline::{import_registry, resources};
+use pipeline::{host_moves, import_registry, lifecycle, resources};
 
 #[derive(Parser)]
 #[command(about = "seido-data-hub のデータ取り込み・更新")]
@@ -36,6 +37,16 @@ enum Command {
         /// 前回の Last-Modified（条件付き取得を試す）
         #[arg(long)]
         last_modified: Option<String>,
+    },
+    /// 転送で見つかったホスト移行を、許可リストに入れてよいものとして承認する（DATABASE_URL を使う）。
+    /// 承認するのは、移行先が本物で同じ組織のサイトだと確かめてから
+    ApproveHostMove {
+        /// 元のホスト（例: https://www.old.example.jp）
+        #[arg(long)]
+        from: String,
+        /// 移行先のホスト
+        #[arg(long)]
+        to: String,
     },
 }
 
@@ -93,6 +104,14 @@ async fn main() -> anyhow::Result<()> {
                 print_fetch(url, &fetcher.fetch(url, &validators).await);
             }
         }
+        Command::ApproveHostMove { from, to } => {
+            let database_url = std::env::var("DATABASE_URL").context("DATABASE_URL が無い")?;
+            let db = sea_orm::Database::connect(&database_url).await?;
+            if !host_moves::approve(&db, &from, &to).await? {
+                anyhow::bail!("その移行は観測されていない: {from} → {to}");
+            }
+            println!("承認した: {from} → {to}");
+        }
     }
     Ok(())
 }
@@ -147,6 +166,13 @@ fn print_fetch(url: &str, fetch: &pipeline::fetch::Fetch) {
             hop.elapsed.as_millis()
         );
     }
+    let extracted = match &fetch.outcome {
+        Outcome::Response(response) => match &response.body {
+            Body::Html(html) => Some(extract::extract(&html.text, &response.url)),
+            _ => None,
+        },
+        _ => None,
+    };
     match &fetch.outcome {
         Outcome::Response(response) => {
             let body = match &response.body {
@@ -178,10 +204,6 @@ fn print_fetch(url: &str, fetch: &pipeline::fetch::Fetch) {
             if let Some(raw_hash) = &response.raw_hash {
                 println!("    raw_hash   {raw_hash}");
             }
-            let extracted = match &response.body {
-                Body::Html(html) => Some(extract::extract(&html.text, &response.url)),
-                _ => None,
-            };
             if let Some(extracted) = &extracted {
                 print_extracted(extracted);
             }
@@ -210,5 +232,24 @@ fn print_fetch(url: &str, fetch: &pipeline::fetch::Fetch) {
         Outcome::Network { url, error, detail } => {
             println!("  → 通信エラー（{}）{url}: {detail}", error.as_str())
         }
+    }
+    print_verdict(&lifecycle::verdict(fetch, extracted.as_ref(), &[]));
+}
+
+fn print_verdict(verdict: &Verdict) {
+    println!(
+        "    ジョブ {:?}{} / 資源への観測 {:?}",
+        verdict.job,
+        verdict
+            .error_type
+            .map(|error_type| format!("（{error_type}）"))
+            .unwrap_or_default(),
+        verdict.observation
+    );
+    if let Some(host_move) = &verdict.host_move {
+        println!(
+            "    ホスト移行の候補: {} → {}",
+            host_move.from_host_key, host_move.to_host_key
+        );
     }
 }
