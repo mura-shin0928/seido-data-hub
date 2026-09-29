@@ -6,13 +6,11 @@ mod common;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
 use common::*;
-use domain::extract;
 use domain::liveness::{Job, Observation, Why};
 use entity::resources;
-use pipeline::fetch::{Body, Fetch, Fetcher, Hop, Outcome, Response};
+use pipeline::fetch::{Fetch, Fetcher};
 use pipeline::host_moves;
 use pipeline::lifecycle::{Context, Processed, Resolved, process};
 use pipeline::resources::Linked;
@@ -27,13 +25,7 @@ async fn run(db: &DatabaseConnection, fetcher: &Fetcher, url_id: Uuid, path: &st
 }
 
 async fn process_fetch(db: &DatabaseConnection, url_id: Uuid, fetch: &Fetch) -> Processed {
-    let extracted = match &fetch.outcome {
-        Outcome::Response(response) => match &response.body {
-            Body::Html(html) => Some(extract::extract(&html.text, &response.url)),
-            _ => None,
-        },
-        _ => None,
-    };
+    let extracted = extracted_of(fetch);
     let ctx = Context {
         host_trusted: true,
         known_not_found_titles: &[],
@@ -54,28 +46,6 @@ async fn resource(db: &DatabaseConnection, canonical: &str) -> resources::Model 
 
 fn empty(status: u16) -> axum::response::Response {
     reply(status).body(Default::default()).unwrap()
-}
-
-/// 304 の応答（本文を読んでいない）
-fn not_modified(path: &str) -> Fetch {
-    Fetch {
-        hops: vec![Hop {
-            url: url(path),
-            status: 304,
-            elapsed: Duration::ZERO,
-        }],
-        outcome: Outcome::Response(Response {
-            url: url(path),
-            status: 304,
-            etag: None,
-            last_modified: None,
-            content_type: None,
-            x_robots_tag: None,
-            body: Body::NotRead,
-            bytes: 0,
-            raw_hash: None,
-        }),
-    }
 }
 
 #[tokio::test]

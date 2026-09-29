@@ -10,9 +10,9 @@ use axum::Router;
 use axum::extract::Request;
 use axum::http::{StatusCode, header};
 use axum::response::Response as HttpResponse;
-use entity::{resources, url_resources, urls as urls_table};
+use entity::{crawl_runs, resources, url_resources, urls as urls_table};
 use migration::{Migrator, MigratorTrait};
-use pipeline::fetch::{Config, Fetcher};
+use pipeline::fetch::{Body, Config, Fetch, Fetcher, Hop, Outcome, Response};
 use sea_orm::{
     ActiveValue::Set, ColumnTrait, Database, DatabaseConnection, EntityTrait, QueryFilter,
     prelude::Uuid,
@@ -129,5 +129,58 @@ pub async fn links_of(db: &DatabaseConnection, url_id: Uuid) -> Vec<url_resource
         .filter(url_resources::Column::UrlId.eq(url_id))
         .all(db)
         .await
+        .unwrap()
+}
+
+/// `crawl_runs` に1行入れて id を返す
+pub async fn start_run(db: &DatabaseConnection) -> Uuid {
+    crawl_runs::Entity::insert(crawl_runs::ActiveModel {
+        kind: Set("test".to_string()),
+        ..Default::default()
+    })
+    .exec(db)
+    .await
+    .unwrap()
+    .last_insert_id
+}
+
+/// 304 の応答（本文を読んでいない）
+pub fn not_modified(path: &str) -> Fetch {
+    Fetch {
+        hops: vec![Hop {
+            url: url(path),
+            status: 304,
+            elapsed: Duration::ZERO,
+        }],
+        outcome: Outcome::Response(Response {
+            url: url(path),
+            status: 304,
+            etag: None,
+            last_modified: None,
+            content_type: None,
+            x_robots_tag: None,
+            body: Body::NotRead,
+            bytes: 0,
+            raw_hash: None,
+        }),
+    }
+}
+
+/// HTML を読んだ応答から本文を取り出す。取り出せない応答は `None`
+pub fn extracted_of(fetch: &Fetch) -> Option<domain::extract::Extracted> {
+    match &fetch.outcome {
+        Outcome::Response(response) => match &response.body {
+            Body::Html(html) => Some(domain::extract::extract(&html.text, &response.url)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// 本文だけが違う 200 のページ
+pub fn body_page(text: &str) -> HttpResponse {
+    reply(200)
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .body(format!("<html><head></head><body><main>{text}</main></body></html>").into())
         .unwrap()
 }

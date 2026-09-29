@@ -21,7 +21,7 @@ API として提供する（予定）。
 | `crates/domain` | DB も HTTP も知らない純粋ロジック（レジストリの読み取り・月齢の変換など） |
 | `crates/entity` | SeaORM のエンティティ（`sea-orm-cli generate entity` で DB から生成） |
 | `crates/migration` | スキーマ（SQL を SeaORM の migration で流す） |
-| `crates/pipeline` | データの取り込み・更新を行う CLI |
+| `crates/pipeline` | データの取り込み・更新を行う CLI。取得の結果は `pipeline::persist::record` が履歴・資源の状態・ジョブの完了とともに1つのトランザクションで保存する（巡回を回すコマンドはまだ無い） |
 | `crates/api` | 読み取り専用の HTTP API（axum。Lambda でもローカルでも同じ Router） |
 
 ## ローカル開発
