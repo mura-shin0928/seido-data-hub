@@ -10,7 +10,7 @@ use axum::Router;
 use axum::extract::Request;
 use axum::http::{StatusCode, header};
 use axum::response::Response as HttpResponse;
-use entity::{resources, url_resources, urls as urls_table};
+use entity::{crawl_runs, resources, url_resources, urls as urls_table};
 use migration::{Migrator, MigratorTrait};
 use pipeline::fetch::{Config, Fetcher};
 use sea_orm::{
@@ -130,4 +130,16 @@ pub async fn links_of(db: &DatabaseConnection, url_id: Uuid) -> Vec<url_resource
         .all(db)
         .await
         .unwrap()
+}
+
+/// `crawl_runs` に1行入れて id を返す
+pub async fn start_run(db: &DatabaseConnection) -> Uuid {
+    crawl_runs::Entity::insert(crawl_runs::ActiveModel {
+        kind: Set("test".to_string()),
+        ..Default::default()
+    })
+    .exec(db)
+    .await
+    .unwrap()
+    .last_insert_id
 }
