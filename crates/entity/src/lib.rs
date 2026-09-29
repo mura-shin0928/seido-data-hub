@@ -3,6 +3,7 @@
 pub mod prelude;
 
 pub mod areas;
+pub mod host_moves;
 pub mod program_urls;
 pub mod programs;
 pub mod resources;
