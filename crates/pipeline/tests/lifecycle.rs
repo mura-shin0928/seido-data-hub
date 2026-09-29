@@ -162,7 +162,11 @@ async fn a_304_also_brings_a_candidate_back() {
     let done = process_fetch(&db, id, &not_modified("/a.html")).await;
     assert!(done.linked.is_none());
     assert_eq!(done.transition.map(|t| t.restored), Some(true));
-    assert_eq!(resource(&db, &url("/a.html")).await.state, "active");
+    let resource = resource(&db, &url("/a.html")).await;
+    assert_eq!(
+        (resource.state.as_str(), resource.consecutive_not_found),
+        ("active", 0)
+    );
 }
 
 #[tokio::test]
@@ -406,4 +410,110 @@ async fn a_move_to_another_host_is_recorded_and_touches_no_resource() {
     let done = run(&db, &fetcher, b, "/b.html").await;
     assert_eq!(done.verdict.error_type, Some("out_of_scope"));
     assert!(done.verdict.host_move.is_none());
+}
+
+/// /a.html（X）と /smph/a.html（Y）が1つの資源 R を共有し、X が /b.html（S）に吸収されて R が moved になった状態を作る。
+/// その後 Y だけが /c.html へ転送される。`c_exists` なら /c.html は先に資源がある
+type RelinkSetup = (
+    DatabaseConnection,
+    tokio::sync::MutexGuard<'static, ()>,
+    Fetcher,
+    Uuid,
+    resources::Model,
+    resources::Model,
+);
+
+async fn relink_setup(c_exists: bool) -> Option<RelinkSetup> {
+    let (db, guard) = fresh_db().await?;
+    let x_moves = Arc::new(AtomicBool::new(false));
+    let y_moves = Arc::new(AtomicBool::new(false));
+    let fetcher = {
+        let (x_moves, y_moves) = (x_moves.clone(), y_moves.clone());
+        serve(move |path| match path {
+            "/a.html" if x_moves.load(Ordering::SeqCst) => redirect(301, "/b.html"),
+            "/smph/a.html" if y_moves.load(Ordering::SeqCst) => redirect(301, "/c.html"),
+            "/smph/a.html" => redirect(301, "/a.html"),
+            "/c.html" if !c_exists => empty(404),
+            _ => page(None),
+        })
+        .await
+    };
+    let x = register(&db, &url("/a.html")).await;
+    let y = register(&db, &url("/smph/a.html")).await;
+    let s = register(&db, &url("/b.html")).await;
+    run(&db, &fetcher, x, "/a.html").await;
+    run(&db, &fetcher, y, "/smph/a.html").await;
+    run(&db, &fetcher, s, "/b.html").await;
+    if c_exists {
+        let c = register(&db, &url("/c.html")).await;
+        run(&db, &fetcher, c, "/c.html").await;
+    }
+    let r = resource(&db, &url("/a.html")).await;
+    let s = resource(&db, &url("/b.html")).await;
+
+    x_moves.store(true, Ordering::SeqCst);
+    let done = run(&db, &fetcher, x, "/a.html").await;
+    assert!(matches!(done.resolved, Some(Resolved::Absorbed { .. })));
+    y_moves.store(true, Ordering::SeqCst);
+    Some((db, guard, fetcher, y, r, s))
+}
+
+#[tokio::test]
+async fn a_moved_resource_is_relinked_not_renamed_to_a_new_address() {
+    let Some((db, _guard, fetcher, y, r, s)) = relink_setup(false).await else {
+        return;
+    };
+    let done = run(&db, &fetcher, y, "/smph/a.html").await;
+    let new = resource(&db, &url("/c.html")).await;
+    assert_eq!(
+        done.resolved,
+        Some(Resolved::Relinked {
+            from_resource_id: r.id,
+            resource_id: new.id,
+        })
+    );
+    // R は moved のまま、代表 URL も吸収先も変わらない
+    let r_after = resource(&db, &url("/a.html")).await;
+    assert_eq!(r_after.id, r.id);
+    assert_eq!(r_after.state, "moved");
+    assert_eq!(r_after.moved_to_resource_id, Some(s.id));
+    // 新しい資源が観測される（404 なので削除候補）
+    assert_eq!(new.state, CANDIDATE);
+    assert_eq!(all_resources(&db).await.len(), 3);
+    let linked: Vec<Uuid> = links_of(&db, y)
+        .await
+        .iter()
+        .map(|l| l.resource_id)
+        .collect();
+    assert_eq!(linked.len(), 2);
+    assert!(linked.contains(&r.id) && linked.contains(&new.id));
+}
+
+#[tokio::test]
+async fn a_moved_resource_relinks_to_an_existing_resource_without_touching_it() {
+    let Some((db, _guard, fetcher, y, r, s)) = relink_setup(true).await else {
+        return;
+    };
+    let existing = resource(&db, &url("/c.html")).await;
+    let done = run(&db, &fetcher, y, "/smph/a.html").await;
+    assert_eq!(
+        done.resolved,
+        Some(Resolved::Relinked {
+            from_resource_id: r.id,
+            resource_id: existing.id,
+        })
+    );
+    let r_after = resource(&db, &url("/a.html")).await;
+    assert_eq!(
+        (r_after.state.as_str(), r_after.moved_to_resource_id),
+        ("moved", Some(s.id))
+    );
+    assert_eq!(all_resources(&db).await.len(), 3);
+    assert_eq!(resource(&db, &url("/c.html")).await.state, "active");
+    let linked: Vec<Uuid> = links_of(&db, y)
+        .await
+        .iter()
+        .map(|l| l.resource_id)
+        .collect();
+    assert!(linked.contains(&existing.id) && linked.contains(&r.id));
 }

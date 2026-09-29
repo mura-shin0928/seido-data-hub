@@ -18,7 +18,7 @@ use sea_orm::{
 
 use crate::fetch::{Fetch, Outcome};
 use crate::host_moves;
-use crate::resources::{self as links, Linked, upsert_url_resource};
+use crate::resources::{self as links, Linked, upsert_resource, upsert_url_resource};
 
 /// 取得の結果を分類する。`known_not_found_titles` はそのホストで既知の Not Found の `title_hash`
 pub fn verdict(
@@ -103,7 +103,12 @@ pub enum Resolved {
         from_resource_id: Uuid,
         into_resource_id: Uuid,
     },
-    /// 吸収先が `moved`、または元の資源へ `moved` している。輪や鎖を作らないよう何も書かなかった
+    /// 元の資源が既に `moved` だった。資源には触れず、URL を新しい代表 URL の資源に結び直した
+    Relinked {
+        from_resource_id: Uuid,
+        resource_id: Uuid,
+    },
+    /// 吸収先が `moved`、または元の資源へ `moved` している。輪を作らず、`moved` の資源へ吸収もしないよう何も書かなかった（鎖は防いでいない）
     Refused {
         from_resource_id: Uuid,
         into_resource_id: Uuid,
@@ -135,6 +140,15 @@ pub async fn resolve_change<C: TransactionTrait>(
         .context("移動先の資源を読めない")?;
 
     let resolved = match target {
+        // 元の資源が `moved` なら凍結されているので、書き換えも吸収もせず、URL を新しい代表 URL に結び直す
+        _ if from.state == State::Moved.as_str() => {
+            let (resource_id, _) = upsert_resource(&txn, decision).await?;
+            upsert_url_resource(&txn, url_id, resource_id, decision.relation).await?;
+            Resolved::Relinked {
+                from_resource_id,
+                resource_id,
+            }
+        }
         None => {
             resources::Entity::update_many()
                 .col_expr(
@@ -255,7 +269,8 @@ pub async fn process<C: ConnectionTrait + TransactionTrait>(
                 Linked::Changed { resource_id, .. } => {
                     let resolved = resolve_change(db, url_id, *resource_id, &decision).await?;
                     let id = match &resolved {
-                        Resolved::Renamed { resource_id, .. } => Some(*resource_id),
+                        Resolved::Renamed { resource_id, .. }
+                        | Resolved::Relinked { resource_id, .. } => Some(*resource_id),
                         Resolved::Absorbed {
                             into_resource_id, ..
                         } => Some(*into_resource_id),
