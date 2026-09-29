@@ -5,8 +5,8 @@
 
 use anyhow::Context as _;
 use domain::extract::{self, Extracted};
-use domain::liveness::Job;
-use entity::{fetch_history, urls};
+use domain::liveness::{Job, Observation};
+use entity::{content_versions, fetch_history, resources, urls};
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{
     ActiveValue::Set,
@@ -32,7 +32,9 @@ pub struct Attempt<'a> {
 #[derive(Debug)]
 pub enum Recorded {
     Saved {
-        processed: Processed,
+        processed: Box<Processed>,
+        /// 内容を上書きしたときの、上書き前の `body_hash`（初回・上書きなしは無い）。変化の判定に使う
+        previous_body_hash: Option<String>,
     },
     /// この実行でこの URL は記録済み。何も書いていない（同じ実行の流し直し）
     AlreadyRecorded,
@@ -68,6 +70,12 @@ pub async fn record<C: ConnectionTrait + TransactionTrait>(
         attempt.ctx,
     )
     .await?;
+    let previous_body_hash = match (processed.resource_id, processed.verdict.observation) {
+        (Some(resource_id), Some(observation)) => {
+            save_resource(&txn, resource_id, observation, attempt).await?
+        }
+        _ => None,
+    };
     complete_job(
         &txn,
         &url,
@@ -77,7 +85,10 @@ pub async fn record<C: ConnectionTrait + TransactionTrait>(
     .await?;
 
     txn.commit().await?;
-    Ok(Recorded::Saved { processed })
+    Ok(Recorded::Saved {
+        processed: Box::new(processed),
+        previous_body_hash,
+    })
 }
 
 /// 履歴を1行追記する。この実行でこの URL の行が既にあれば書かずに false
@@ -145,6 +156,113 @@ fn describe(outcome: &Outcome) -> (&'static str, Option<String>) {
         }
         Outcome::Network { detail, .. } => ("network", Some(detail.clone())),
     }
+}
+
+/// 観測を当てた資源に、取得の時刻と、読みきった生きている200の内容を書く。
+/// 内容を書いたときは上書き前の `body_hash` を返す。
+///
+/// 内容はソフト404・304・404 などでは書かない（生きていたときの内容を、復活の比較のために残す）。
+/// 応答に無い値は NULL で上書きする（消えた validator を送り続けない）。
+/// `last_changed_at`・`change_count`・`next_crawl_at` は動かさない。
+async fn save_resource(
+    txn: &impl ConnectionTrait,
+    resource_id: Uuid,
+    observation: Observation,
+    attempt: &Attempt<'_>,
+) -> anyhow::Result<Option<String>> {
+    let readable = match &attempt.fetch.outcome {
+        Outcome::Response(response) if observation == Observation::Alive => response
+            .raw_hash
+            .as_ref()
+            .map(|raw_hash| (response, raw_hash)),
+        _ => None,
+    };
+    let Some((response, raw_hash)) = readable else {
+        resources::Entity::update_many()
+            .col_expr(resources::Column::LastCrawledAt, Expr::current_timestamp())
+            .col_expr(resources::Column::UpdatedAt, Expr::current_timestamp())
+            .filter(resources::Column::Id.eq(resource_id))
+            .exec(txn)
+            .await
+            .context("資源の取得時刻を書けない")?;
+        return Ok(None);
+    };
+
+    let before = resources::Entity::find_by_id(resource_id)
+        .lock_exclusive()
+        .one(txn)
+        .await
+        .context("資源を読めない")?
+        .context("資源が無い")?;
+    let extracted = attempt.extracted;
+    resources::Entity::update_many()
+        .col_expr(resources::Column::RawHash, Expr::value(raw_hash.clone()))
+        .col_expr(resources::Column::Etag, Expr::value(response.etag.clone()))
+        .col_expr(
+            resources::Column::LastModified,
+            Expr::value(response.last_modified.clone()),
+        )
+        .col_expr(
+            resources::Column::PageHash,
+            Expr::value(extracted.map(|e| e.hashes.page.clone())),
+        )
+        .col_expr(
+            resources::Column::TitleHash,
+            Expr::value(extracted.and_then(|e| e.hashes.title.clone())),
+        )
+        .col_expr(
+            resources::Column::BodyHash,
+            Expr::value(extracted.map(|e| e.hashes.body.clone())),
+        )
+        .col_expr(
+            resources::Column::LinksHash,
+            Expr::value(extracted.map(|e| e.hashes.links.clone())),
+        )
+        .col_expr(
+            resources::Column::PageUpdatedOn,
+            Expr::value(extracted.and_then(|e| e.page_updated_on)),
+        )
+        .col_expr(
+            resources::Column::ExtractorVersion,
+            Expr::value(extracted.map(|_| extract::EXTRACTOR_VERSION)),
+        )
+        .col_expr(
+            resources::Column::ExtractorRule,
+            Expr::value(extracted.map(|e| e.rule.as_str().to_string())),
+        )
+        .col_expr(
+            resources::Column::RobotsMeta,
+            Expr::value(extracted.and_then(|e| e.robots_meta.clone())),
+        )
+        .col_expr(resources::Column::LastCrawledAt, Expr::current_timestamp())
+        .col_expr(resources::Column::UpdatedAt, Expr::current_timestamp())
+        .filter(resources::Column::Id.eq(resource_id))
+        .exec(txn)
+        .await
+        .context("資源の内容を書けない")?;
+
+    if let Some(extracted) = extracted {
+        content_versions::Entity::insert(content_versions::ActiveModel {
+            resource_id: Set(resource_id),
+            body_hash: Set(extracted.hashes.body.clone()),
+            title: Set(extracted.title.clone()),
+            page_updated_on: Set(extracted.page_updated_on),
+            extractor_version: Set(Some(extract::EXTRACTOR_VERSION)),
+            ..Default::default()
+        })
+        .on_conflict(
+            OnConflict::columns([
+                content_versions::Column::ResourceId,
+                content_versions::Column::BodyHash,
+            ])
+            .do_nothing()
+            .to_owned(),
+        )
+        .exec_without_returning(txn)
+        .await
+        .context("content_versions を書けない")?;
+    }
+    Ok(before.body_hash)
 }
 
 /// ジョブを完了にする。回数は取得の記録と同じトランザクションで動かす。

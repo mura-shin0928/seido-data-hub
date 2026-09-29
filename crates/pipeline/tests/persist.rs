@@ -5,11 +5,13 @@
 mod common;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::time::Duration;
 
 use common::*;
-use entity::{content_versions, fetch_history, urls};
-use pipeline::fetch::{Fetch, Fetcher, NetworkError, Outcome};
+use domain::extract;
+use entity::{content_versions, fetch_history, resources, urls};
+use pipeline::fetch::{Body, Fetch, Fetcher, Hop, NetworkError, Outcome, Response};
 use pipeline::lifecycle::Context;
 use pipeline::persist::{Attempt, Recorded, record};
 use sea_orm::{
@@ -297,4 +299,232 @@ async fn an_attempt_without_a_response_is_kept_in_history() {
     assert!(row.error_type.is_some());
     assert_eq!((job.status.as_str(), job.retry_count), ("retry_wait", 1));
     assert!(all_resources(&db).await.is_empty());
+}
+
+async fn only_resource(db: &DatabaseConnection) -> resources::Model {
+    let all = all_resources(db).await;
+    assert_eq!(all.len(), 1);
+    all.into_iter().next().unwrap()
+}
+
+async fn versions(db: &DatabaseConnection) -> Vec<String> {
+    let mut rows: Vec<_> = content_versions::Entity::find()
+        .all(db)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| row.body_hash)
+        .collect();
+    rows.sort();
+    rows
+}
+
+fn with_validators(text: &str) -> axum::response::Response {
+    let mut response = body_page(text);
+    let headers = response.headers_mut();
+    headers.insert("etag", "\"v1\"".parse().unwrap());
+    headers.insert(
+        "last-modified",
+        "Mon, 01 Jan 2026 00:00:00 GMT".parse().unwrap(),
+    );
+    response
+}
+
+#[tokio::test]
+async fn an_alive_page_saves_its_hashes_validators_and_a_version() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let fetcher = serve(|_| with_validators("本文")).await;
+    let id = register(&db, &url("/a.html")).await;
+    let fetch = get(&fetcher, "/a.html").await;
+    let run = start_run(&db).await;
+
+    let Recorded::Saved {
+        previous_body_hash, ..
+    } = record_fetch(&db, run, id, 0, &fetch).await
+    else {
+        panic!("保存される");
+    };
+    assert_eq!(previous_body_hash, None);
+
+    let extracted = extracted_of(&fetch).unwrap();
+    let resource = only_resource(&db).await;
+    assert_eq!(
+        resource.body_hash.as_deref(),
+        Some(extracted.hashes.body.as_str())
+    );
+    assert_eq!(
+        resource.page_hash.as_deref(),
+        Some(extracted.hashes.page.as_str())
+    );
+    assert_eq!(
+        resource.links_hash.as_deref(),
+        Some(extracted.hashes.links.as_str())
+    );
+    assert!(resource.raw_hash.is_some());
+    assert_eq!(resource.etag.as_deref(), Some("\"v1\""));
+    assert_eq!(
+        resource.last_modified.as_deref(),
+        Some("Mon, 01 Jan 2026 00:00:00 GMT")
+    );
+    assert_eq!(resource.extractor_version, Some(extract::EXTRACTOR_VERSION));
+    assert_eq!(
+        resource.extractor_rule.as_deref(),
+        Some(extracted.rule.as_str())
+    );
+    assert!(resource.last_crawled_at.is_some());
+    // 変化の判定は別の層。ここでは動かさない
+    assert_eq!((resource.last_changed_at, resource.change_count), (None, 0));
+    assert_eq!(resource.next_crawl_at, None);
+    assert_eq!(versions(&db).await, vec![extracted.hashes.body]);
+
+    let history = fetch_history::Entity::find()
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(history.body_hash.as_deref(), resource.body_hash.as_deref());
+    assert_eq!(history.etag.as_deref(), Some("\"v1\""));
+}
+
+#[tokio::test]
+async fn a_changed_body_adds_a_version_and_hands_back_the_previous_hash() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let second = Arc::new(AtomicBool::new(false));
+    let fetcher = {
+        let second = second.clone();
+        serve(move |_| {
+            body_page(if second.load(Ordering::SeqCst) {
+                "改訂"
+            } else {
+                "初版"
+            })
+        })
+        .await
+    };
+    let id = register(&db, &url("/a.html")).await;
+
+    let first = get(&fetcher, "/a.html").await;
+    record_fetch(&db, start_run(&db).await, id, 0, &first).await;
+    let first_hash = only_resource(&db).await.body_hash.unwrap();
+
+    second.store(true, Ordering::SeqCst);
+    let changed = get(&fetcher, "/a.html").await;
+    let Recorded::Saved {
+        previous_body_hash, ..
+    } = record_fetch(&db, start_run(&db).await, id, 0, &changed).await
+    else {
+        panic!("保存される");
+    };
+    assert_eq!(previous_body_hash.as_deref(), Some(first_hash.as_str()));
+    let second_hash = only_resource(&db).await.body_hash.unwrap();
+    assert_ne!(first_hash, second_hash);
+    assert_eq!(versions(&db).await.len(), 2);
+
+    // 元に戻っても、版は増えない。最新は資源が持つ
+    record_fetch(&db, start_run(&db).await, id, 0, &first).await;
+    assert_eq!(versions(&db).await.len(), 2);
+    assert_eq!(only_resource(&db).await.body_hash.unwrap(), first_hash);
+}
+
+#[tokio::test]
+async fn a_soft_404_does_not_overwrite_the_last_alive_content() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let gone = Arc::new(AtomicBool::new(false));
+    let fetcher = {
+        let gone = gone.clone();
+        serve(move |_| {
+            if gone.load(Ordering::SeqCst) {
+                titled("ページが見つかりません")
+            } else {
+                with_validators("本文")
+            }
+        })
+        .await
+    };
+    let id = register(&db, &url("/a.html")).await;
+    let alive = get(&fetcher, "/a.html").await;
+    record_fetch(&db, start_run(&db).await, id, 0, &alive).await;
+    let before = only_resource(&db).await;
+
+    gone.store(true, Ordering::SeqCst);
+    let soft = get(&fetcher, "/a.html").await;
+    record_fetch(&db, start_run(&db).await, id, 0, &soft).await;
+
+    let after = only_resource(&db).await;
+    assert_eq!(after.state, "deletion_candidate");
+    assert_eq!(after.body_hash, before.body_hash);
+    assert_eq!(after.raw_hash, before.raw_hash);
+    assert_eq!(after.etag, before.etag);
+    assert_eq!(versions(&db).await.len(), 1);
+    // 履歴には、そのとき見たものがそのまま残る
+    let history = fetch_history::Entity::find().all(&db).await.unwrap();
+    assert_eq!(history.len(), 2);
+    assert!(history.iter().any(|row| row.raw_hash != before.raw_hash));
+}
+
+#[tokio::test]
+async fn a_304_keeps_the_content_and_only_moves_last_crawled_at() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let fetcher = serve(|_| with_validators("本文")).await;
+    let id = register(&db, &url("/a.html")).await;
+    let alive = get(&fetcher, "/a.html").await;
+    record_fetch(&db, start_run(&db).await, id, 0, &alive).await;
+    let before = only_resource(&db).await;
+
+    let Recorded::Saved {
+        previous_body_hash, ..
+    } = record_fetch(&db, start_run(&db).await, id, 0, &not_modified("/a.html")).await
+    else {
+        panic!("保存される");
+    };
+    assert_eq!(previous_body_hash, None);
+
+    let after = only_resource(&db).await;
+    assert_eq!(after.body_hash, before.body_hash);
+    assert_eq!(after.raw_hash, before.raw_hash);
+    assert_eq!(after.etag, before.etag);
+    assert_eq!(after.last_modified, before.last_modified);
+    assert!(after.last_crawled_at > before.last_crawled_at);
+}
+
+#[tokio::test]
+async fn a_pdf_saves_only_its_raw_hash() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let id = register(&db, &url("/a.pdf")).await;
+    let fetch = Fetch {
+        hops: vec![Hop {
+            url: url("/a.pdf"),
+            status: 200,
+            elapsed: Duration::ZERO,
+        }],
+        outcome: Outcome::Response(Response {
+            url: url("/a.pdf"),
+            status: 200,
+            etag: None,
+            last_modified: None,
+            content_type: Some("application/pdf".to_string()),
+            x_robots_tag: None,
+            body: Body::Pdf(b"%PDF-1.7".to_vec()),
+            bytes: 8,
+            raw_hash: Some(extract::digest(b"%PDF-1.7")),
+        }),
+    };
+
+    record_fetch(&db, start_run(&db).await, id, 0, &fetch).await;
+
+    let resource = only_resource(&db).await;
+    assert!(resource.raw_hash.is_some());
+    assert_eq!(resource.body_hash, None);
+    assert_eq!(resource.extractor_version, None);
+    assert!(versions(&db).await.is_empty());
 }
