@@ -58,7 +58,10 @@ pub async fn record<C: ConnectionTrait + TransactionTrait>(
     if url.claim_token != attempt.claim_token {
         return Ok(Recorded::StaleClaim);
     }
-    if !insert_history(&txn, attempt).await? {
+    // claim し直された URL（processing）は、同じ実行の中の再試行。前の試行の行は最新の試行で置き換える。
+    // 完了済み（processing でない）の流し直しは、記録済みとして何も書かない
+    let retrying = url.status == "processing";
+    if !insert_history(&txn, attempt, retrying).await? {
         return Ok(Recorded::AlreadyRecorded);
     }
 
@@ -91,8 +94,20 @@ pub async fn record<C: ConnectionTrait + TransactionTrait>(
     })
 }
 
-/// 履歴を1行追記する。この実行でこの URL の行が既にあれば書かずに false
-async fn insert_history(txn: &impl ConnectionTrait, attempt: &Attempt<'_>) -> anyhow::Result<bool> {
+/// 履歴を1行追記する。`replace` でなく、この実行でこの URL の行が既にあれば書かずに false
+async fn insert_history(
+    txn: &impl ConnectionTrait,
+    attempt: &Attempt<'_>,
+    replace: bool,
+) -> anyhow::Result<bool> {
+    if replace {
+        fetch_history::Entity::delete_many()
+            .filter(fetch_history::Column::RunId.eq(attempt.run_id))
+            .filter(fetch_history::Column::UrlId.eq(attempt.url_id))
+            .exec(txn)
+            .await
+            .context("前の試行の履歴を置き換えられない")?;
+    }
     let fetch = attempt.fetch;
     let response = match &fetch.outcome {
         Outcome::Response(response) => Some(response),

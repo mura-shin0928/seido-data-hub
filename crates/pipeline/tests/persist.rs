@@ -528,3 +528,57 @@ async fn a_pdf_saves_only_its_raw_hash() {
     assert_eq!(resource.extractor_version, None);
     assert!(versions(&db).await.is_empty());
 }
+
+#[tokio::test]
+async fn a_retry_in_the_same_run_replaces_the_earlier_attempt() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let status = Arc::new(AtomicU16::new(503));
+    let fetcher = {
+        let status = status.clone();
+        serve(move |_| match status.load(Ordering::SeqCst) {
+            200 => titled("制度"),
+            other => empty(other),
+        })
+        .await
+    };
+    let id = register(&db, &url("/a.html")).await;
+    let run = start_run(&db).await;
+
+    let failed = get(&fetcher, "/a.html").await;
+    record_fetch(&db, run, id, 0, &failed).await;
+    assert_eq!(url_row(&db, id).await.status, "retry_wait");
+
+    // 同じ実行の中でスケジューラが claim し直した（processing）
+    urls::Entity::update_many()
+        .col_expr(
+            urls::Column::Status,
+            sea_orm::sea_query::Expr::value("processing"),
+        )
+        .filter(urls::Column::Id.eq(id))
+        .exec(&db)
+        .await
+        .unwrap();
+    status.store(200, Ordering::SeqCst);
+    let ok = get(&fetcher, "/a.html").await;
+    assert!(matches!(
+        record_fetch(&db, run, id, 0, &ok).await,
+        Recorded::Saved { .. }
+    ));
+
+    let row = url_row(&db, id).await;
+    assert_eq!(
+        (row.status.as_str(), row.retry_count, row.attempt_count),
+        ("succeeded", 0, 2)
+    );
+    let history = fetch_history::Entity::find().all(&db).await.unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].http_status, Some(200));
+
+    // 完了した後の流し直しは、これまでどおり何も書かない
+    assert!(matches!(
+        record_fetch(&db, run, id, 0, &ok).await,
+        Recorded::AlreadyRecorded
+    ));
+}
