@@ -244,6 +244,8 @@ pub struct Processed {
     pub resolved: Option<Resolved>,
     /// 資源に観測を当てたときだけ
     pub transition: Option<Transition>,
+    /// 観測を当てた資源。代表 URL の変化を解決した後の資源で、観測を当てなかったとき（拒否を含む）は無い
+    pub resource_id: Option<Uuid>,
 }
 
 /// 1回の取得の結果を反映する: 分類 → 代表 URL を決めて結ぶ → 変化を解決 → 状態を動かす。
@@ -303,6 +305,7 @@ pub async fn process<C: ConnectionTrait + TransactionTrait>(
         verdict,
         linked,
         resolved,
+        resource_id: transition.and(resource_id),
         transition,
     })
 }
