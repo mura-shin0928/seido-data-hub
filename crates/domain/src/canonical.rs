@@ -216,7 +216,7 @@ pub fn decide(observed: &Observed<'_>) -> Option<Decision> {
 }
 
 /// ホストのトップ（パスが `/` か `/index.*`、クエリなし）
-fn is_top_page(url: &str) -> bool {
+pub fn is_top_page(url: &str) -> bool {
     let Ok(url) = Url::parse(url) else {
         return false;
     };
