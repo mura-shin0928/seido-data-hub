@@ -4,12 +4,12 @@
 //! 変わったことを返す（同じ内容の移動か、別の資源への統合かの判断は呼び出し側）。
 
 use anyhow::Context;
-use domain::canonical::{self, Action, Decision, Hop, Observed, Source};
+use domain::canonical::{self, Action, Decision, Hop, Observed, Relation, Source};
 use entity::{resources, url_resources};
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{
-    ActiveValue::Set, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, TransactionSession,
-    TransactionTrait, prelude::Uuid,
+    ActiveValue::Set, ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder,
+    TransactionSession, TransactionTrait, prelude::Uuid,
 };
 
 use crate::fetch::{Fetch, Outcome};
@@ -129,10 +129,26 @@ pub async fn link<C: TransactionTrait>(
             .context("resources を更新できない")?;
     }
 
+    upsert_url_resource(&txn, url_id, resource_id, decision.relation).await?;
+
+    txn.commit().await?;
+    Ok(Linked::Linked {
+        resource_id,
+        created,
+    })
+}
+
+/// URL と資源の結び付きを書く。あれば結び方と観測の日時を更新する（行は増えない）
+pub(crate) async fn upsert_url_resource(
+    db: &impl ConnectionTrait,
+    url_id: Uuid,
+    resource_id: Uuid,
+    relation: Relation,
+) -> anyhow::Result<()> {
     url_resources::Entity::insert(url_resources::ActiveModel {
         url_id: Set(url_id),
         resource_id: Set(resource_id),
-        relation: Set(decision.relation.as_str().to_string()),
+        relation: Set(relation.as_str().to_string()),
         ..Default::default()
     })
     .on_conflict(
@@ -144,13 +160,8 @@ pub async fn link<C: TransactionTrait>(
         .value(url_resources::Column::ObservedAt, Expr::current_timestamp())
         .to_owned(),
     )
-    .exec_without_returning(&txn)
+    .exec_without_returning(db)
     .await
     .context("url_resources を書けない")?;
-
-    txn.commit().await?;
-    Ok(Linked::Linked {
-        resource_id,
-        created,
-    })
+    Ok(())
 }
