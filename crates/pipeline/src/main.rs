@@ -1,4 +1,6 @@
 use std::collections::BTreeSet;
+use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -38,6 +40,13 @@ enum Command {
         /// 前回の Last-Modified（条件付き取得を試す）
         #[arg(long)]
         last_modified: Option<String>,
+    },
+    /// 時刻の来た URL を取得して記録する（DATABASE_URL を使う）。同時16件・同一ホスト1件・2秒間隔で robots.txt を守る。
+    /// 途中で止めたら、10分（lease）後に流し直せば続きから進む
+    Crawl {
+        /// crawl_runs に残す実行の種類（例: sweep）
+        #[arg(long, default_value = "manual")]
+        kind: String,
     },
     /// 転送で見つかったホスト移行を、許可リストに入れてよいものとして承認する（DATABASE_URL を使う）。
     /// 承認するのは、移行先が本物で同じ組織のサイトだと確かめてから
@@ -103,6 +112,24 @@ async fn main() -> anyhow::Result<()> {
             };
             for url in &urls {
                 print_fetch(url, &fetcher.fetch(url, &validators).await);
+            }
+        }
+        Command::Crawl { kind } => {
+            let database_url = std::env::var("DATABASE_URL").context("DATABASE_URL が無い")?;
+            let db = sea_orm::Database::connect(&database_url).await?;
+            let allowed = crawl::allowed_hosts(&db).await?;
+            let fetcher = Arc::new(Fetcher::new(Config::default(), allowed)?);
+            let started = Instant::now();
+            let (run_id, summary) =
+                crawl::run_recorded(&db, fetcher, &kind, &crawl::Config::default()).await?;
+            println!(
+                "実行 {run_id}（{kind}）: 記録 {} 件 / claim を取られていた {} 件 / {} 秒",
+                summary.saved,
+                summary.stale,
+                started.elapsed().as_secs()
+            );
+            for host in &summary.skipped_hosts {
+                println!("  robots.txt が読めず見送ったホスト: {host}");
             }
         }
         Command::ApproveHostMove { from, to } => {

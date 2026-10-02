@@ -10,10 +10,11 @@ use domain::canonical::{self, Declaration};
 use domain::extract::{self, Extracted};
 use domain::schedule::Policy;
 use domain::urls;
-use entity::{resources, urls as urls_table};
+use entity::{crawl_runs, resources, urls as urls_table};
+use sea_orm::sea_query::Expr;
 use sea_orm::{
-    ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, EntityTrait, FromQueryResult,
-    QueryFilter, QuerySelect, Statement, prelude::Uuid,
+    ActiveValue::Set, ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, EntityTrait,
+    FromQueryResult, QueryFilter, QuerySelect, Statement, prelude::Uuid,
 };
 use tokio::task::JoinSet;
 use tokio::time::{Instant, MissedTickBehavior};
@@ -222,6 +223,34 @@ pub async fn run(
         }
     }
     Ok(summary)
+}
+
+/// crawl_runs に `kind` の実行を作り、run を回し、正常に終えたら finished_at を書く。
+/// 失敗したら finished_at は空のまま（終わらなかった実行として残る）、エラーに run_id を添えて返す
+pub async fn run_recorded(
+    db: &DatabaseConnection,
+    fetcher: Arc<Fetcher>,
+    kind: &str,
+    config: &Config,
+) -> anyhow::Result<(Uuid, Summary)> {
+    let run_id = crawl_runs::Entity::insert(crawl_runs::ActiveModel {
+        kind: Set(kind.to_string()),
+        ..Default::default()
+    })
+    .exec(db)
+    .await
+    .context("実行を作れない")?
+    .last_insert_id;
+    let summary = run(db, fetcher, run_id, config)
+        .await
+        .with_context(|| format!("実行 {run_id} が途中で止まった"))?;
+    crawl_runs::Entity::update_many()
+        .col_expr(crawl_runs::Column::FinishedAt, Expr::cust("now()"))
+        .filter(crawl_runs::Column::Id.eq(run_id))
+        .exec(db)
+        .await
+        .with_context(|| format!("実行 {run_id} の終わりを書けない"))?;
+    Ok((run_id, summary))
 }
 
 /// 1件: validator を引く → 取得 → 抽出 → 記録

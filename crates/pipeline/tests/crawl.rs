@@ -14,10 +14,13 @@ use axum::body::Bytes;
 use common::*;
 use domain::liveness::HostMove;
 use domain::schedule::Policy;
+use entity::crawl_runs;
 use entity::{fetch_history, resources, urls as urls_table};
 use futures_util::stream;
 use pipeline::claim::{self, Exclude};
-use pipeline::crawl::{Config, Summary, allowed_hosts, host_trusted, run, validators};
+use pipeline::crawl::{
+    Config, Summary, allowed_hosts, host_trusted, run, run_recorded, validators,
+};
 use pipeline::fetch::Fetcher;
 use pipeline::host_moves;
 use pipeline::lifecycle::Context;
@@ -518,7 +521,6 @@ async fn robots_txt_unreadable_at_the_redirect_target_skips_both_hosts() {
     let Some((db, _guard)) = fresh_db().await else {
         return;
     };
-    const TOWN: &str = "www.town.example.jp";
     let fetcher = Arc::new(
         serve_hosts(
             &[CITY, TOWN],
@@ -548,7 +550,6 @@ async fn urls_of_two_hosts_linked_to_one_resource_are_not_claimed_together() {
     let Some((db, _guard)) = fresh_db().await else {
         return;
     };
-    const TOWN: &str = "www.town.example.jp";
     let alive = Arc::new(AtomicBool::new(true));
     let entries = Arc::new(AtomicUsize::new(0));
     let fetcher = Arc::new(
@@ -595,4 +596,83 @@ async fn urls_of_two_hosts_linked_to_one_resource_are_not_claimed_together() {
         .unwrap()
         .consecutive_not_found;
     assert_eq!(not_found, 1);
+}
+
+/// 実行を記録して回す。ループが終わらない不具合はハングではなく失敗にする
+async fn run_recorded_once(db: &DatabaseConnection, fetcher: &Arc<Fetcher>) -> (Uuid, Summary) {
+    timeout(
+        Duration::from_secs(10),
+        run_recorded(db, fetcher.clone(), "sweep", &run_config()),
+    )
+    .await
+    .expect("実行が終わる")
+    .expect("実行が失敗しない")
+}
+
+#[tokio::test]
+async fn a_recorded_run_is_closed_and_a_second_run_right_after_fetches_nothing() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let fetcher = Arc::new(serve(|_| page(None)).await);
+    register(&db, &url("/a.html")).await;
+    register(&db, &url("/b.html")).await;
+
+    let (first, summary) = run_recorded_once(&db, &fetcher).await;
+    assert_eq!(summary.saved, 2);
+    let row = crawl_runs::Entity::find_by_id(first)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.kind, "sweep");
+    assert!(row.finished_at.is_some());
+
+    // 成功した行は7日後まで候補に出ない
+    let (second, summary) = run_recorded_once(&db, &fetcher).await;
+    assert_ne!(second, first);
+    assert_eq!(summary.saved, 0);
+    assert_eq!(
+        fetch_history::Entity::find().all(&db).await.unwrap().len(),
+        2
+    );
+    let runs = crawl_runs::Entity::find().all(&db).await.unwrap();
+    assert_eq!(runs.len(), 2);
+    assert!(runs.iter().all(|run| run.finished_at.is_some()));
+}
+
+#[tokio::test]
+async fn two_new_urls_on_different_hosts_redirecting_to_one_page_share_a_resource() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let target = format!("http://{TOWN}/c.html");
+    let fetcher = Arc::new(
+        serve_hosts(
+            &[CITY, TOWN],
+            |_| reply(404).body(Default::default()).unwrap(),
+            {
+                let target = target.clone();
+                // CITY の /a.html と TOWN の /b.html が、どちらも TOWN の /c.html へ転送する
+                move |path| match path {
+                    "/c.html" => page(None),
+                    _ => redirect(301, &target),
+                }
+            },
+        )
+        .await,
+    );
+    let a = register(&db, &url("/a.html")).await;
+    let b = register(&db, &format!("http://{TOWN}/b.html")).await;
+
+    let (_, summary) = run_recorded_once(&db, &fetcher).await;
+
+    assert_eq!(summary.saved, 2);
+    let all = all_resources(&db).await;
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].canonical_url, target);
+    assert_eq!(links_of(&db, a).await[0].resource_id, all[0].id);
+    assert_eq!(links_of(&db, b).await[0].resource_id, all[0].id);
+    assert_eq!(url_row(&db, a).await.status, "succeeded");
+    assert_eq!(url_row(&db, b).await.status, "succeeded");
 }
