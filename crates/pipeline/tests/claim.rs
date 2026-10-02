@@ -4,7 +4,7 @@
 
 mod common;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use common::*;
@@ -233,8 +233,14 @@ async fn urls_of_an_excluded_resource_give_way_to_the_next_url_of_the_host() {
     set_priority(&db, a, 90).await;
     set_priority(&db, b, 80).await;
     let resource = link_to_new_resource(&db, a, &url("/a.html")).await;
+    // 別の URL が取った資源
     let exclude = Exclude {
-        resources: BTreeSet::from([resource]),
+        resources: BTreeMap::from([(resource, b)]),
+        ..Default::default()
+    };
+    // a 自身が取った資源なら、a は外さない
+    let taken_by_a = Exclude {
+        resources: BTreeMap::from([(resource, a)]),
         ..Default::default()
     };
 
@@ -243,6 +249,7 @@ async fn urls_of_an_excluded_resource_give_way_to_the_next_url_of_the_host() {
         BTreeSet::from([a])
     );
     assert_eq!(candidate_ids(&db, &exclude).await, BTreeSet::from([b]));
+    assert_eq!(candidate_ids(&db, &taken_by_a).await, BTreeSet::from([a]));
 
     // 資源を取った URL は claim したときに分かる
     let claims = claim::claim(&db, &[a], "worker-1", LEASE).await.unwrap();
@@ -256,6 +263,12 @@ async fn urls_of_an_excluded_resource_give_way_to_the_next_url_of_the_host() {
         .expect("再試行を待つ行がある");
     assert!(wait > Duration::from_secs(8) && wait <= Duration::from_secs(10));
     assert_eq!(claim::next_retry_in(&db, &exclude).await.unwrap(), None);
+    assert!(
+        claim::next_retry_in(&db, &taken_by_a)
+            .await
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[tokio::test]

@@ -477,3 +477,68 @@ async fn heartbeat_keeps_a_slow_fetch_from_being_reclaimed() {
     assert_eq!(summary.stale, 0);
     assert_eq!(url_row(&db, id).await.status, "succeeded");
 }
+
+#[tokio::test]
+async fn a_linked_url_is_retried_in_the_same_run() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let calls = Arc::new(AtomicUsize::new(0));
+    let fetcher = Arc::new(
+        serve({
+            let calls = calls.clone();
+            // 1回目の実行は 200、2回目の実行は 503 を1回返してから 200
+            move |_| match calls.fetch_add(1, Ordering::SeqCst) {
+                1 => reply(503).body(Default::default()).unwrap(),
+                _ => page(None),
+            }
+        })
+        .await,
+    );
+    let id = register(&db, &url("/a.html")).await;
+    run_once(&db, &fetcher).await;
+    assert!(
+        !links_of(&db, id).await.is_empty(),
+        "前の実行で資源に結ばれている"
+    );
+    let before = url_row(&db, id).await.attempt_count;
+    set_status(&db, id, "succeeded", "now() - interval '1 second'").await;
+
+    // 資源を取ったのはこの URL 自身なので、同じ実行の中で再試行される
+    run_once(&db, &fetcher).await;
+
+    let row = url_row(&db, id).await;
+    assert_eq!(row.status, "succeeded");
+    assert_eq!(row.attempt_count, before + 2);
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn robots_txt_unreadable_at_the_redirect_target_skips_both_hosts() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    const TOWN: &str = "www.town.example.jp";
+    let fetcher = Arc::new(
+        serve_hosts(
+            &[CITY, TOWN],
+            |host| match host {
+                TOWN => reply(503).body(Default::default()).unwrap(),
+                _ => reply(404).body(Default::default()).unwrap(),
+            },
+            |_| redirect(301, &format!("http://{TOWN}/a.html")),
+        )
+        .await,
+    );
+    let id = register(&db, &url("/a.html")).await;
+
+    let summary = run_once(&db, &fetcher).await;
+
+    let row = url_row(&db, id).await;
+    assert_eq!(row.status, "retry_wait");
+    assert_eq!(row.attempt_count, 1);
+    assert_eq!(
+        summary.skipped_hosts,
+        BTreeSet::from([format!("http://{CITY}"), format!("http://{TOWN}")])
+    );
+}

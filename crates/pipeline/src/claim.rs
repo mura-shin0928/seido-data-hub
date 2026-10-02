@@ -4,7 +4,7 @@
 //! 候補・claim・再試行までの残りが同じ条件を使う。時刻の比較と書き込みは DB の時計（`now()`）で行う。
 
 use std::cmp::Reverse;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -37,8 +37,9 @@ pub struct Claim {
 #[derive(Debug, Default, Clone)]
 pub struct Exclude {
     pub hosts: BTreeSet<String>,
-    /// この資源にいま結ばれている URL は外す
-    pub resources: BTreeSet<Uuid>,
+    /// 資源 → それを取った URL。資源にいま結ばれている URL は、取った URL 自身を除いて外す
+    /// （取った URL の再試行は同じ実行の中で続ける）
+    pub resources: BTreeMap<Uuid, Uuid>,
 }
 
 /// 候補の条件（`u` は urls）。`due` が false なら時刻の条件を外す。
@@ -65,14 +66,20 @@ const CURRENT_RESOURCE: &str = "LEFT JOIN LATERAL (\
     SELECT ur.resource_id FROM url_resources ur \
     WHERE ur.url_id = u.id ORDER BY ur.observed_at DESC LIMIT 1) current ON TRUE";
 
-/// 除外の条件。`$1` にホスト、`$2` に資源を渡す
+/// 除外の条件。`$1` にホスト、`$2` と `$3` に資源とそれを取った URL を同じ順で渡す
 const NOT_EXCLUDED: &str = "u.host_key <> ALL($1) \
-    AND (current.resource_id IS NULL OR current.resource_id <> ALL($2))";
+    AND NOT EXISTS (\
+        SELECT 1 FROM unnest($2::uuid[], $3::uuid[]) AS taken(resource_id, url_id) \
+        WHERE taken.resource_id = current.resource_id AND taken.url_id <> u.id)";
 
-fn exclude_values(exclude: &Exclude) -> [Value; 2] {
+fn exclude_values(exclude: &Exclude) -> [Value; 3] {
     let hosts: Vec<String> = exclude.hosts.iter().cloned().collect();
-    let resources: Vec<Uuid> = exclude.resources.iter().copied().collect();
-    [hosts.into(), resources.into()]
+    let (resources, takers): (Vec<Uuid>, Vec<Uuid>) = exclude
+        .resources
+        .iter()
+        .map(|(resource, taker)| (*resource, *taker))
+        .unzip();
+    [hosts.into(), resources.into(), takers.into()]
 }
 
 /// 時刻が来た URL を、ホストごとに先頭1件（priority 降順 → next_crawl_at → id）

@@ -49,6 +49,16 @@ pub async fn serve_with_robots(
     robots: impl Fn() -> HttpResponse + Send + Sync + 'static,
     respond: impl Fn(&str) -> HttpResponse + Send + Sync + 'static,
 ) -> Fetcher {
+    serve_hosts(&[CITY], move |_| robots(), respond).await
+}
+
+/// `hosts` のどれも同じテスト用サーバーへ向け、すべて許可リストに入れる。
+/// robots.txt はホスト名（Host ヘッダーからポートを除いたもの）ごとに `robots` が返す
+pub async fn serve_hosts(
+    hosts: &[&str],
+    robots: impl Fn(&str) -> HttpResponse + Send + Sync + 'static,
+    respond: impl Fn(&str) -> HttpResponse + Send + Sync + 'static,
+) -> Fetcher {
     let robots = Arc::new(robots);
     let respond: Arc<Respond> = Arc::new(respond);
     let app = Router::new().fallback(move |request: Request| {
@@ -56,7 +66,14 @@ pub async fn serve_with_robots(
         let respond = respond.clone();
         async move {
             match request.uri().path() {
-                "/robots.txt" => robots(),
+                "/robots.txt" => {
+                    let host = request
+                        .headers()
+                        .get(header::HOST)
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or_default();
+                    robots(host.split(':').next().unwrap_or_default())
+                }
                 path => respond(path),
             }
         }
@@ -69,11 +86,12 @@ pub async fn serve_with_robots(
         min_interval: Duration::from_millis(20),
         ..Config::default()
     };
-    let client = Fetcher::client_builder(&config)
-        .resolve(CITY, addr)
-        .build()
-        .unwrap();
-    let allowed = BTreeSet::from([format!("http://{CITY}")]);
+    let mut builder = Fetcher::client_builder(&config);
+    for host in hosts {
+        builder = builder.resolve(host, addr);
+    }
+    let client = builder.build().unwrap();
+    let allowed: BTreeSet<String> = hosts.iter().map(|host| format!("http://{host}")).collect();
     Fetcher::with_client(client, config, allowed)
 }
 

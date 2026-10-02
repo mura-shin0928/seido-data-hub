@@ -88,8 +88,9 @@ struct Done {
 /// 候補が尽きるまで claim → 取得 → 抽出 → 記録を回す。`run_id` の crawl_runs は呼び出し側が作る。
 ///
 /// - 同時に `concurrency` 件まで、ホストごとに1件
-/// - この実行で取った資源・いま取得中の資源に結ばれている URL は候補から外す（資源は実行あたり1回）
-/// - robots.txt が読めないホストは、この実行の残りでは claim しない
+/// - この実行で取った資源・いま取得中の資源に結ばれている URL は、取った URL 自身を除いて候補から外す
+///   （資源は実行あたり1回。取った URL の再試行は続ける。再試行の判定は観測を持たないので、見つからない観測は二重に進まない）
+/// - robots.txt が読めないホスト（転送先で読めなかったときは claim したホストも）は、この実行の残りでは claim しない
 /// - 取得中が無く候補も無いとき、近い再試行（`longest_retry_wait` 以内）があればそこまで待ち、無ければ終わる
 /// - 記録が失敗したら残りを止めてエラーを返す。取得中だった行は lease が切れて次の実行で回収される
 pub async fn run(
@@ -100,7 +101,8 @@ pub async fn run(
 ) -> anyhow::Result<Summary> {
     let mut summary = Summary::default();
     let mut in_flight: BTreeMap<Uuid, InFlight> = BTreeMap::new();
-    let mut taken_resources: BTreeSet<Uuid> = BTreeSet::new();
+    // 資源 → この実行でそれを最初に取った URL
+    let mut taken_resources: BTreeMap<Uuid, Uuid> = BTreeMap::new();
     let mut trusted: HashMap<String, bool> = HashMap::new();
     // 戻るとき（エラーを含む）に JoinSet を落とせば、残りのタスクは止まる
     let mut tasks: JoinSet<anyhow::Result<Done>> = JoinSet::new();
@@ -144,7 +146,9 @@ pub async fn run(
                         host_key: claim.host_key.clone(),
                     },
                 );
-                taken_resources.extend(claim.resource_id);
+                if let Some(resource_id) = claim.resource_id {
+                    taken_resources.entry(resource_id).or_insert(claim.url_id);
+                }
                 tasks.spawn(attempt(
                     db.clone(),
                     fetcher.clone(),
@@ -175,14 +179,19 @@ pub async fn run(
             joined = tasks.join_next() => {
                 let Some(joined) = joined else { continue };
                 let done = joined.context("取得のタスクが止まった")??;
-                in_flight.remove(&done.url_id);
+                let flight = in_flight.remove(&done.url_id);
                 if let Some(host_key) = done.robots_unavailable {
+                    // 転送先のホストで読めなかったときも、claim したホストごと見送る。
+                    // 残すと再試行のたびに同じ転送先で止まり、この実行の中で再試行を使い切る
                     summary.skipped_hosts.insert(host_key);
+                    summary.skipped_hosts.extend(flight.map(|flight| flight.host_key));
                 }
                 match done.recorded {
                     Recorded::Saved { processed, .. } => {
                         summary.saved += 1;
-                        taken_resources.extend(processed.resource_id);
+                        if let Some(resource_id) = processed.resource_id {
+                            taken_resources.entry(resource_id).or_insert(done.url_id);
+                        }
                     }
                     Recorded::StaleClaim => summary.stale += 1,
                     Recorded::AlreadyRecorded => {}
