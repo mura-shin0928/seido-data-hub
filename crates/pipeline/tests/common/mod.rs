@@ -13,9 +13,10 @@ use axum::response::Response as HttpResponse;
 use entity::{crawl_runs, resources, url_resources, urls as urls_table};
 use migration::{Migrator, MigratorTrait};
 use pipeline::fetch::{Body, Config, Fetch, Fetcher, Hop, Outcome, Response};
+use sea_orm::sea_query::Expr;
 use sea_orm::{
-    ActiveValue::Set, ColumnTrait, Database, DatabaseConnection, EntityTrait, QueryFilter,
-    prelude::Uuid,
+    ActiveValue::Set, ColumnTrait, ConnectionTrait, Database, DatabaseConnection, DbBackend,
+    EntityTrait, QueryFilter, Statement, prelude::Uuid,
 };
 use tokio::sync::{Mutex, MutexGuard};
 
@@ -183,4 +184,25 @@ pub fn body_page(text: &str) -> HttpResponse {
         .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
         .body(format!("<html><head></head><body><main>{text}</main></body></html>").into())
         .unwrap()
+}
+
+/// URL の優先度を変える
+pub async fn set_priority(db: &DatabaseConnection, id: Uuid, priority: i32) {
+    urls_table::Entity::update_many()
+        .col_expr(urls_table::Column::Priority, Expr::value(priority))
+        .filter(urls_table::Column::Id.eq(id))
+        .exec(db)
+        .await
+        .unwrap();
+}
+
+/// URL の状態と次に取る時刻を変える。`next_crawl_at_sql` は `"now() - interval '1 second'"` のような SQL 片
+pub async fn set_status(db: &DatabaseConnection, id: Uuid, status: &str, next_crawl_at_sql: &str) {
+    db.execute_raw(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        format!("update urls set status = $1, next_crawl_at = {next_crawl_at_sql} where id = $2"),
+        [status.into(), id.into()],
+    ))
+    .await
+    .unwrap();
 }
