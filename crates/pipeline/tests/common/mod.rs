@@ -21,6 +21,8 @@ use sea_orm::{
 use tokio::sync::{Mutex, MutexGuard};
 
 pub const CITY: &str = "www.city.example.jp";
+/// 2つ目のホスト（ホストをまたぐテスト用）
+pub const TOWN: &str = "www.town.example.jp";
 
 /// テストは1つのデータベースを共有し、それぞれが作り直す。同時に走ると互いのスキーマを消すので直列にする
 static DB: Mutex<()> = Mutex::const_new(());

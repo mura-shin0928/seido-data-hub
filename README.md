@@ -21,7 +21,7 @@ API として提供する（予定）。
 | `crates/domain` | DB も HTTP も知らない純粋ロジック（レジストリの読み取り・月齢の変換など） |
 | `crates/entity` | SeaORM のエンティティ（`sea-orm-cli generate entity` で DB から生成） |
 | `crates/migration` | スキーマ（SQL を SeaORM の migration で流す） |
-| `crates/pipeline` | データの取り込み・更新を行う CLI。取得の結果は `pipeline::persist::record` が履歴・資源の状態・ジョブの完了とともに1つのトランザクションで保存する（巡回を回すコマンドはまだ無い） |
+| `crates/pipeline` | データの取り込み・更新を行う CLI。取得の結果は `pipeline::persist::record` が履歴・資源の状態・ジョブの完了とともに1つのトランザクションで保存する。`crawl` で巡回を回す |
 | `crates/api` | 読み取り専用の HTTP API（axum。Lambda でもローカルでも同じ Router） |
 
 ## ローカル開発
@@ -58,6 +58,17 @@ HTML なら本文を取り出し、本文コンテナを決めた規則・タイ
 代表 URL（`canonical_url`）とその根拠（恒久転送の先・検証を通った `rel=canonical`・取りに行った URL）、
 採らなかった転送や canonical の理由も表示する（DB を使わないので、ホスト単位の canonical の判定は当てない）。
 許可リストは渡した URL のホストだけなので、それ以外のホストへの転送は追わずに転送先を表示する。
+
+時刻の来た URL を取得して DB に記録する（`import-registry` 済みの DB に対して流す）:
+
+```bash
+cargo run --release -p pipeline -- crawl --kind sweep
+```
+
+同時16件・同一ホストは1件ずつ2秒間隔で、robots.txt を守る。実行は `crawl_runs` に `--kind`（既定 `manual`）で残り、
+正常に終えたときだけ `finished_at` が入る。取得の履歴は `fetch_history` に URL ごとに1行（応答の status・Content-Type・
+文字コード・資源への観測・エラーの理由）。成功した URL は次の時刻（HTML 7日・PDF 30日）まで取らないので、
+続けて流しても取り直さない。途中で止めたら、10分（lease の長さ）後に流し直せば続きから進む。
 
 テスト（統合テストは `TEST_DATABASE_URL` のデータベースを毎回作り直す）:
 

@@ -295,7 +295,8 @@ async fn an_attempt_without_a_response_is_kept_in_history() {
     let row = &rows[0];
     assert_eq!(row.outcome, "network");
     assert_eq!(row.http_status, None);
-    assert_eq!(row.error_detail.as_deref(), Some("timed out"));
+    assert_eq!(row.error_detail.as_deref(), Some("timeout: timed out"));
+    assert_eq!(row.observation, None);
     let job = url_row(&db, id).await;
     assert_eq!(row.error_type, job.last_error_type);
     assert!(row.error_type.is_some());
@@ -704,4 +705,112 @@ async fn a_304_for_a_pdf_waits_thirty_days() {
     record_fetch(&db, start_run(&db).await, page, 0, &fetch).await;
     record_fetch(&db, start_run(&db).await, page, 0, &not_modified("/b.html")).await;
     assert!((seconds_until_next(&db, page).await - 7 * DAY).abs() <= 60);
+}
+
+/// `path` を取得して記録し、その URL の履歴の1行を返す
+async fn record_path(
+    db: &DatabaseConnection,
+    fetcher: &Fetcher,
+    path: &str,
+) -> fetch_history::Model {
+    let id = register(db, &url(path)).await;
+    let run = start_run(db).await;
+    let fetch = fetcher.fetch(&url(path), &Default::default()).await;
+    record_fetch(db, run, id, 0, &fetch).await;
+    fetch_history::Entity::find()
+        .filter(fetch_history::Column::UrlId.eq(id))
+        .one(db)
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn history_keeps_the_content_type_charset_and_observation() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    // 「子育て」を Shift_JIS で
+    let fetcher = serve(|_| {
+        reply(200)
+            .header(
+                axum::http::header::CONTENT_TYPE,
+                "text/html; charset=Shift_JIS",
+            )
+            .body(
+                b"<html><body><main>\x8e\x71\x88\xe7\x82\xc4</main></body></html>"
+                    .to_vec()
+                    .into(),
+            )
+            .unwrap()
+    })
+    .await;
+
+    let row = record_path(&db, &fetcher, "/a.html").await;
+
+    assert_eq!(
+        row.content_type.as_deref(),
+        Some("text/html; charset=Shift_JIS")
+    );
+    assert_eq!(row.charset.as_deref(), Some("Shift_JIS"));
+    assert_eq!(row.charset_source.as_deref(), Some("header"));
+    assert_eq!(row.charset_replaced, Some(false));
+    assert_eq!(row.observation.as_deref(), Some("alive"));
+}
+
+#[tokio::test]
+async fn a_pdf_served_as_octet_stream_keeps_its_header_and_is_read_as_pdf() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let fetcher = serve(|_| {
+        reply(200)
+            .header(axum::http::header::CONTENT_TYPE, "application/octet-stream")
+            .body("%PDF-1.7\n".into())
+            .unwrap()
+    })
+    .await;
+
+    let row = record_path(&db, &fetcher, "/a.pdf").await;
+
+    assert_eq!(
+        row.content_type.as_deref(),
+        Some("application/octet-stream")
+    );
+    assert_eq!(row.charset, None);
+    assert_eq!(row.charset_source, None);
+    assert_eq!(row.charset_replaced, None);
+    // 先頭が %PDF- なので PDF として読む（ヘッダの値は残る）
+    assert!(row.raw_hash.is_some());
+    assert_eq!(row.body_hash, None);
+    assert_eq!(row.observation.as_deref(), Some("alive"));
+}
+
+#[tokio::test]
+async fn soft_404s_and_top_redirects_are_told_apart_from_live_pages() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let fetcher = serve(|path| match path {
+        "/gone.html" => titled("ページが見つかりません"),
+        "/old.html" => redirect(301, "/"),
+        "/" => page(None),
+        "/missing.html" => empty(404),
+        "/removed.html" => empty(410),
+        _ => empty(403),
+    })
+    .await;
+
+    let soft = record_path(&db, &fetcher, "/gone.html").await;
+    assert_eq!(soft.observation.as_deref(), Some("soft_404_title"));
+    assert_eq!(soft.error_type, None);
+    let top = record_path(&db, &fetcher, "/old.html").await;
+    assert_eq!(top.observation.as_deref(), Some("top_redirect"));
+    let missing = record_path(&db, &fetcher, "/missing.html").await;
+    assert_eq!(missing.observation.as_deref(), Some("not_found"));
+    let removed = record_path(&db, &fetcher, "/removed.html").await;
+    assert_eq!(removed.observation.as_deref(), Some("gone"));
+    let forbidden = record_path(&db, &fetcher, "/forbidden.html").await;
+    assert_eq!(forbidden.observation, None);
+    assert_eq!(forbidden.error_type.as_deref(), Some("forbidden"));
 }
