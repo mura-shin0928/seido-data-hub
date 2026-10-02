@@ -40,13 +40,23 @@ type Respond = dyn Fn(&str) -> HttpResponse + Send + Sync;
 
 /// CITY だけを持つテスト用サーバー（robots.txt は無し）を立て、そこへ向けた `Fetcher` を作る
 pub async fn serve(respond: impl Fn(&str) -> HttpResponse + Send + Sync + 'static) -> Fetcher {
+    // robots.txt が無いホスト（制限なし）
+    serve_with_robots(|| reply(404).body(Default::default()).unwrap(), respond).await
+}
+
+/// `serve` の robots.txt の応答を `robots` にしたもの
+pub async fn serve_with_robots(
+    robots: impl Fn() -> HttpResponse + Send + Sync + 'static,
+    respond: impl Fn(&str) -> HttpResponse + Send + Sync + 'static,
+) -> Fetcher {
+    let robots = Arc::new(robots);
     let respond: Arc<Respond> = Arc::new(respond);
     let app = Router::new().fallback(move |request: Request| {
+        let robots = robots.clone();
         let respond = respond.clone();
         async move {
             match request.uri().path() {
-                // robots.txt が無いホスト（制限なし）
-                "/robots.txt" => reply(404).body(Default::default()).unwrap(),
+                "/robots.txt" => robots(),
                 path => respond(path),
             }
         }
