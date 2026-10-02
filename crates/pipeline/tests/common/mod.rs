@@ -169,13 +169,7 @@ pub fn not_modified(path: &str) -> Fetch {
 
 /// HTML を読んだ応答から本文を取り出す。取り出せない応答は `None`
 pub fn extracted_of(fetch: &Fetch) -> Option<domain::extract::Extracted> {
-    match &fetch.outcome {
-        Outcome::Response(response) => match &response.body {
-            Body::Html(html) => Some(domain::extract::extract(&html.text, &response.url)),
-            _ => None,
-        },
-        _ => None,
-    }
+    pipeline::crawl::extract_of(fetch)
 }
 
 /// 本文だけが違う 200 のページ

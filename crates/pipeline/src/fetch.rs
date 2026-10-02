@@ -306,6 +306,18 @@ impl Fetcher {
         Ok(prepared)
     }
 
+    /// そのホストへ次に送ってよい時刻。送ったことが無い・いま送っている途中なら None
+    pub fn ready_at(&self, host_key: &str) -> Option<Instant> {
+        let host = self
+            .hosts
+            .lock()
+            .expect("ホストの表が壊れていない")
+            .get(host_key)
+            .cloned()?;
+        let gate = host.gate.try_lock().ok()?;
+        gate.next_at
+    }
+
     fn host(&self, host_key: &str) -> Arc<Host> {
         let mut hosts = self.hosts.lock().expect("ホストの表が壊れていない");
         hosts
