@@ -82,10 +82,7 @@ pub async fn record<C: ConnectionTrait + TransactionTrait>(
         }
         _ => None,
     };
-    let pdf = matches!(
-        &attempt.fetch.outcome,
-        Outcome::Response(response) if matches!(response.body, Body::Pdf(_))
-    );
+    let pdf = is_pdf(&txn, attempt.fetch, processed.resource_id).await?;
     complete_job(
         &txn,
         &url,
@@ -101,6 +98,31 @@ pub async fn record<C: ConnectionTrait + TransactionTrait>(
         processed: Box::new(processed),
         previous_body_hash,
     })
+}
+
+/// 次の間隔を PDF のものにするか。本文を読んだ応答は本文の種類で決める。
+/// 本文を読まない 304 は、観測した資源の保存のされ方で決める（PDF は raw_hash だけ、HTML は body_hash も持つ）
+async fn is_pdf(
+    txn: &impl ConnectionTrait,
+    fetch: &Fetch,
+    resource_id: Option<Uuid>,
+) -> anyhow::Result<bool> {
+    let Outcome::Response(response) = &fetch.outcome else {
+        return Ok(false);
+    };
+    match (&response.body, response.status, resource_id) {
+        (Body::Pdf(_), _, _) => Ok(true),
+        (Body::NotRead, 304, Some(resource_id)) => {
+            let resource = resources::Entity::find_by_id(resource_id)
+                .one(txn)
+                .await
+                .context("資源を読めない")?;
+            Ok(resource.is_some_and(|resource| {
+                resource.raw_hash.is_some() && resource.body_hash.is_none()
+            }))
+        }
+        _ => Ok(false),
+    }
 }
 
 /// 履歴を1行追記する。`replace` でなく、この実行でこの URL の行が既にあれば書かずに false

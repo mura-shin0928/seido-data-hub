@@ -684,3 +684,24 @@ async fn a_pdf_waits_thirty_days_and_blocked_waits_a_week() {
     assert_eq!(url_row(&db, blocked).await.status, "blocked");
     assert!((seconds_until_next(&db, blocked).await - 7 * DAY).abs() <= 60);
 }
+
+#[tokio::test]
+async fn a_304_for_a_pdf_waits_thirty_days() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let pdf = register(&db, &url("/a.pdf")).await;
+    record_fetch(&db, start_run(&db).await, pdf, 0, &pdf_fetch(200)).await;
+    // 本文を読まない 304 でも、保存した資源が PDF なら PDF の間隔
+    record_fetch(&db, start_run(&db).await, pdf, 0, &not_modified("/a.pdf")).await;
+    assert_eq!(url_row(&db, pdf).await.status, "succeeded");
+    assert!((seconds_until_next(&db, pdf).await - 30 * DAY).abs() <= 60);
+
+    // HTML の 304 は HTML の間隔のまま
+    let fetcher = serve(|_| titled("制度")).await;
+    let page = register(&db, &url("/b.html")).await;
+    let fetch = get(&fetcher, "/b.html").await;
+    record_fetch(&db, start_run(&db).await, page, 0, &fetch).await;
+    record_fetch(&db, start_run(&db).await, page, 0, &not_modified("/b.html")).await;
+    assert!((seconds_until_next(&db, page).await - 7 * DAY).abs() <= 60);
+}
