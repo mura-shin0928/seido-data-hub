@@ -77,6 +77,20 @@ pub enum Observation {
     Gone,
 }
 
+impl Observation {
+    /// `fetch_history.observation` に入れる名前
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Alive => "alive",
+            Self::NotFound(Why::Status) => "not_found",
+            Self::NotFound(Why::TitleSaysNotFound) => "soft_404_title",
+            Self::NotFound(Why::KnownNotFoundTitle) => "soft_404_known_title",
+            Self::NotFound(Why::TopRedirect) => "top_redirect",
+            Self::Gone => "gone",
+        }
+    }
+}
+
 /// 許可リストの外へ、ホストだけが変わって恒久転送された（都の福祉保健局の例）
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostMove {
@@ -223,6 +237,25 @@ mod tests {
                 title_hash: None,
             }),
         }
+    }
+
+    #[test]
+    fn observations_have_the_names_kept_in_history() {
+        assert_eq!(Observation::Alive.as_str(), "alive");
+        assert_eq!(Observation::NotFound(Why::Status).as_str(), "not_found");
+        assert_eq!(
+            Observation::NotFound(Why::TitleSaysNotFound).as_str(),
+            "soft_404_title"
+        );
+        assert_eq!(
+            Observation::NotFound(Why::KnownNotFoundTitle).as_str(),
+            "soft_404_known_title"
+        );
+        assert_eq!(
+            Observation::NotFound(Why::TopRedirect).as_str(),
+            "top_redirect"
+        );
+        assert_eq!(Observation::Gone.as_str(), "gone");
     }
 
     #[test]

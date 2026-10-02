@@ -30,6 +30,15 @@ pub struct Model {
     pub error_type: Option<String>,
     #[sea_orm(column_type = "Text", nullable)]
     pub error_detail: Option<String>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub content_type: Option<String>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub charset: Option<String>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub charset_source: Option<String>,
+    pub charset_replaced: Option<bool>,
+    #[sea_orm(column_type = "Text", nullable)]
+    pub observation: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

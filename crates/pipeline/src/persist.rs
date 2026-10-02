@@ -150,8 +150,11 @@ async fn insert_history(
         .map(i32::from);
     let elapsed: u128 = fetch.hops.iter().map(|hop| hop.elapsed.as_millis()).sum();
     let (outcome, error_detail) = describe(&fetch.outcome);
-    let error_type =
-        lifecycle::verdict(fetch, attempt.extracted, attempt.ctx.known_not_found_titles).error_type;
+    let verdict = lifecycle::verdict(fetch, attempt.extracted, attempt.ctx.known_not_found_titles);
+    let html = response.and_then(|response| match &response.body {
+        Body::Html(html) => Some(html),
+        _ => None,
+    });
 
     let inserted = fetch_history::Entity::insert(fetch_history::ActiveModel {
         run_id: Set(attempt.run_id),
@@ -172,8 +175,15 @@ async fn insert_history(
         declared_canonical_url: Set(attempt
             .extracted
             .and_then(|extracted| extracted.declared_canonical_url.clone())),
-        error_type: Set(error_type.map(str::to_string)),
+        error_type: Set(verdict.error_type.map(str::to_string)),
         error_detail: Set(error_detail),
+        content_type: Set(response.and_then(|response| response.content_type.clone())),
+        charset: Set(html.map(|html| html.encoding.to_string())),
+        charset_source: Set(html.map(|html| html.source.as_str().to_string())),
+        charset_replaced: Set(html.map(|html| html.had_errors)),
+        observation: Set(verdict
+            .observation
+            .map(|observation| observation.as_str().to_string())),
         ..Default::default()
     })
     .on_conflict(
@@ -200,7 +210,10 @@ fn describe(outcome: &Outcome) -> (&'static str, Option<String>) {
         Outcome::TooManyRedirects { location } | Outcome::RedirectLoop { location } => {
             ("redirect_anomaly", Some(location.clone()))
         }
-        Outcome::Network { detail, .. } => ("network", Some(detail.clone())),
+        // 種類（timeout・dns など）を先頭に置き、種類ごとに数えられるようにする
+        Outcome::Network { error, detail, .. } => {
+            ("network", Some(format!("{}: {detail}", error.as_str())))
+        }
     }
 }
 
