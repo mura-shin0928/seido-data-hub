@@ -542,3 +542,57 @@ async fn robots_txt_unreadable_at_the_redirect_target_skips_both_hosts() {
         BTreeSet::from([format!("http://{CITY}"), format!("http://{TOWN}")])
     );
 }
+
+#[tokio::test]
+async fn urls_of_two_hosts_linked_to_one_resource_are_not_claimed_together() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    const TOWN: &str = "www.town.example.jp";
+    let alive = Arc::new(AtomicBool::new(true));
+    let entries = Arc::new(AtomicUsize::new(0));
+    let fetcher = Arc::new(
+        serve_hosts(
+            &[CITY, TOWN],
+            |_| reply(404).body(Default::default()).unwrap(),
+            {
+                let alive = alive.clone();
+                let entries = entries.clone();
+                // どちらのホストの /a.html も CITY の /c.html へ転送する
+                move |path| match path {
+                    "/c.html" if alive.load(Ordering::SeqCst) => page(None),
+                    "/c.html" => reply(404).body(Default::default()).unwrap(),
+                    _ => {
+                        entries.fetch_add(1, Ordering::SeqCst);
+                        redirect(301, &url("/c.html"))
+                    }
+                }
+            },
+        )
+        .await,
+    );
+    let city = register(&db, &url("/a.html")).await;
+    let town = register(&db, &format!("http://{TOWN}/a.html")).await;
+
+    // 1回目: まだ結ばれていないので両方取り、同じ資源に結ぶ
+    run_once(&db, &fetcher).await;
+    let resource = links_of(&db, city).await[0].resource_id;
+    assert_eq!(links_of(&db, town).await[0].resource_id, resource);
+
+    alive.store(false, Ordering::SeqCst);
+    entries.store(0, Ordering::SeqCst);
+    for id in [city, town] {
+        set_status(&db, id, "succeeded", "now() - interval '1 second'").await;
+    }
+
+    // 2回目: ホストは別でも、同じ資源に結ばれた2件を一緒に claim しない
+    run_once(&db, &fetcher).await;
+    assert_eq!(entries.load(Ordering::SeqCst), 1);
+    let not_found = resources::Entity::find_by_id(resource)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap()
+        .consecutive_not_found;
+    assert_eq!(not_found, 1);
+}

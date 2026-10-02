@@ -20,6 +20,9 @@ pub struct Candidate {
     pub host_key: String,
     pub priority: i32,
     pub next_crawl_at: DateTimeWithTimeZone,
+    /// いま結ばれている資源（url_resources の observed_at が最新）。無ければ None。
+    /// 別のホストの URL が同じ資源に結ばれていることがあるので、呼び出し側が1回の claim の中で重ならないようにする
+    pub resource_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, FromQueryResult)]
@@ -88,7 +91,8 @@ pub async fn candidates(
     exclude: &Exclude,
 ) -> anyhow::Result<Vec<Candidate>> {
     let sql = format!(
-        "SELECT DISTINCT ON (u.host_key) u.id AS url_id, u.host_key, u.priority, u.next_crawl_at \
+        "SELECT DISTINCT ON (u.host_key) u.id AS url_id, u.host_key, u.priority, u.next_crawl_at, \
+             current.resource_id \
          FROM urls u {CURRENT_RESOURCE} \
          WHERE {} AND {NOT_EXCLUDED} \
          ORDER BY u.host_key, u.priority DESC, u.next_crawl_at, u.id",
@@ -226,6 +230,7 @@ mod tests {
             host_key: host.to_string(),
             priority,
             next_crawl_at: DateTimeWithTimeZone::parse_from_rfc3339(next_crawl_at).unwrap(),
+            resource_id: None,
         }
     }
 

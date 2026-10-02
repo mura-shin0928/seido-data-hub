@@ -250,6 +250,9 @@ async fn urls_of_an_excluded_resource_give_way_to_the_next_url_of_the_host() {
     );
     assert_eq!(candidate_ids(&db, &exclude).await, BTreeSet::from([b]));
     assert_eq!(candidate_ids(&db, &taken_by_a).await, BTreeSet::from([a]));
+    // 候補はいまの資源を持つ（1回の claim の中で資源が重ならないようにするため）
+    let listed = claim::candidates(&db, &Exclude::default()).await.unwrap();
+    assert_eq!(listed[0].resource_id, Some(resource));
 
     // 資源を取った URL は claim したときに分かる
     let claims = claim::claim(&db, &[a], "worker-1", LEASE).await.unwrap();

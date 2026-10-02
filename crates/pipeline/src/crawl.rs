@@ -129,7 +129,22 @@ pub async fn run(
                 Instant::now(),
                 free,
             );
-            let ids: Vec<Uuid> = picked.iter().map(|candidate| candidate.url_id).collect();
+            // 候補はホストごとに1件なので、別のホストの URL が同じ資源に結ばれていると1回で両方を選びうる。
+            // この回で既に選んだ資源と、この実行で別の URL が取った資源に結ばれた候補は落とす
+            let mut chosen: BTreeSet<Uuid> = BTreeSet::new();
+            let ids: Vec<Uuid> = picked
+                .iter()
+                .filter(|candidate| match candidate.resource_id {
+                    None => true,
+                    Some(resource_id) => {
+                        let taken_by_other = taken_resources
+                            .get(&resource_id)
+                            .is_some_and(|taker| *taker != candidate.url_id);
+                        !taken_by_other && chosen.insert(resource_id)
+                    }
+                })
+                .map(|candidate| candidate.url_id)
+                .collect();
             for claim in claim::claim(db, &ids, &config.worker_id, config.lease).await? {
                 let host_trusted = match trusted.get(&claim.host_key) {
                     Some(trusted) => *trusted,
