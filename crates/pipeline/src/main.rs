@@ -6,6 +6,7 @@ use domain::canonical::Decision;
 use domain::extract::{self, Extracted};
 use domain::fetch::CharsetSource;
 use domain::liveness::Verdict;
+use pipeline::crawl;
 use pipeline::fetch::{Body, Config, Fetcher, Outcome, Validators};
 use pipeline::{host_moves, import_registry, lifecycle, resources};
 
@@ -166,13 +167,7 @@ fn print_fetch(url: &str, fetch: &pipeline::fetch::Fetch) {
             hop.elapsed.as_millis()
         );
     }
-    let extracted = match &fetch.outcome {
-        Outcome::Response(response) => match &response.body {
-            Body::Html(html) => Some(extract::extract(&html.text, &response.url)),
-            _ => None,
-        },
-        _ => None,
-    };
+    let extracted = crawl::extract_of(fetch);
     match &fetch.outcome {
         Outcome::Response(response) => {
             let body = match &response.body {

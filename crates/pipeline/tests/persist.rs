@@ -10,13 +10,14 @@ use std::time::Duration;
 
 use common::*;
 use domain::extract;
+use domain::schedule::Policy;
 use entity::{content_versions, fetch_history, resources, urls};
 use pipeline::fetch::{Body, Fetch, Fetcher, Hop, NetworkError, Outcome, Response};
 use pipeline::lifecycle::Context;
 use pipeline::persist::{Attempt, Recorded, record};
 use sea_orm::{
     ActiveValue::Set, ColumnTrait, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait,
-    PaginatorTrait, QueryFilter, TransactionTrait, prelude::Uuid,
+    PaginatorTrait, QueryFilter, Statement, TransactionTrait, prelude::Uuid,
 };
 
 async fn insert_history(db: &DatabaseConnection, run_id: Uuid, url_id: Uuid) -> Result<u64, DbErr> {
@@ -98,6 +99,7 @@ async fn record_fetch<C: ConnectionTrait + TransactionTrait>(
             fetch,
             extracted: extracted.as_ref(),
             ctx: &ctx,
+            policy: &Policy::default(),
         },
     )
     .await
@@ -581,4 +583,125 @@ async fn a_retry_in_the_same_run_replaces_the_earlier_attempt() {
         record_fetch(&db, run, id, 0, &ok).await,
         Recorded::AlreadyRecorded
     ));
+}
+
+/// `next_crawl_at - now()` を秒で返す
+async fn seconds_until_next(db: &DatabaseConnection, id: Uuid) -> i64 {
+    let row = db
+        .query_one_raw(Statement::from_sql_and_values(
+            db.get_database_backend(),
+            "SELECT extract(epoch from next_crawl_at - now())::float8 AS secs FROM urls WHERE id = $1",
+            [id.into()],
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    row.try_get::<f64>("", "secs").unwrap().round() as i64
+}
+
+const DAY: i64 = 24 * 60 * 60;
+
+fn pdf_fetch(status: u16) -> Fetch {
+    Fetch {
+        hops: vec![Hop {
+            url: url("/a.pdf"),
+            status,
+            elapsed: Duration::ZERO,
+        }],
+        outcome: Outcome::Response(Response {
+            url: url("/a.pdf"),
+            status,
+            etag: None,
+            last_modified: None,
+            content_type: Some("application/pdf".to_string()),
+            x_robots_tag: None,
+            body: Body::Pdf(b"%PDF-1.7".to_vec()),
+            bytes: 8,
+            raw_hash: Some(extract::digest(b"%PDF-1.7")),
+        }),
+    }
+}
+
+#[tokio::test]
+async fn a_success_schedules_the_next_crawl_a_week_later() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let fetcher = serve(|_| titled("制度")).await;
+    let id = register(&db, &url("/a.html")).await;
+
+    let fetch = get(&fetcher, "/a.html").await;
+    record_fetch(&db, start_run(&db).await, id, 0, &fetch).await;
+
+    assert_eq!(url_row(&db, id).await.status, "succeeded");
+    assert!((seconds_until_next(&db, id).await - 7 * DAY).abs() <= 60);
+}
+
+#[tokio::test]
+async fn the_third_failure_becomes_failed_final() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let fetcher = serve(|_| empty(503)).await;
+    let id = register(&db, &url("/a.html")).await;
+
+    let mut seen = Vec::new();
+    for _ in 0..3 {
+        let fetch = get(&fetcher, "/a.html").await;
+        record_fetch(&db, start_run(&db).await, id, 0, &fetch).await;
+        let row = url_row(&db, id).await;
+        seen.push((
+            row.status,
+            row.retry_count,
+            seconds_until_next(&db, id).await,
+        ));
+    }
+
+    assert_eq!(seen[0].0, "retry_wait");
+    assert_eq!(seen[0].1, 1);
+    assert!((9..=15).contains(&seen[0].2), "{}", seen[0].2);
+    assert_eq!(seen[1].0, "retry_wait");
+    assert_eq!(seen[1].1, 2);
+    assert!((19..=25).contains(&seen[1].2), "{}", seen[1].2);
+    assert_eq!(seen[2].0, "failed_final");
+    assert_eq!(seen[2].1, 3);
+    assert!((seen[2].2 - 7 * DAY).abs() <= 60);
+}
+
+#[tokio::test]
+async fn a_pdf_waits_thirty_days_and_blocked_waits_a_week() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let pdf = register(&db, &url("/a.pdf")).await;
+    record_fetch(&db, start_run(&db).await, pdf, 0, &pdf_fetch(200)).await;
+    assert!((seconds_until_next(&db, pdf).await - 30 * DAY).abs() <= 60);
+
+    let fetcher = serve(|_| empty(403)).await;
+    let blocked = register(&db, &url("/b.html")).await;
+    let fetch = get(&fetcher, "/b.html").await;
+    record_fetch(&db, start_run(&db).await, blocked, 0, &fetch).await;
+    assert_eq!(url_row(&db, blocked).await.status, "blocked");
+    assert!((seconds_until_next(&db, blocked).await - 7 * DAY).abs() <= 60);
+}
+
+#[tokio::test]
+async fn a_304_for_a_pdf_waits_thirty_days() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let pdf = register(&db, &url("/a.pdf")).await;
+    record_fetch(&db, start_run(&db).await, pdf, 0, &pdf_fetch(200)).await;
+    // 本文を読まない 304 でも、保存した資源が PDF なら PDF の間隔
+    record_fetch(&db, start_run(&db).await, pdf, 0, &not_modified("/a.pdf")).await;
+    assert_eq!(url_row(&db, pdf).await.status, "succeeded");
+    assert!((seconds_until_next(&db, pdf).await - 30 * DAY).abs() <= 60);
+
+    // HTML の 304 は HTML の間隔のまま
+    let fetcher = serve(|_| titled("制度")).await;
+    let page = register(&db, &url("/b.html")).await;
+    let fetch = get(&fetcher, "/b.html").await;
+    record_fetch(&db, start_run(&db).await, page, 0, &fetch).await;
+    record_fetch(&db, start_run(&db).await, page, 0, &not_modified("/b.html")).await;
+    assert!((seconds_until_next(&db, page).await - 7 * DAY).abs() <= 60);
 }

@@ -13,9 +13,10 @@ use axum::response::Response as HttpResponse;
 use entity::{crawl_runs, resources, url_resources, urls as urls_table};
 use migration::{Migrator, MigratorTrait};
 use pipeline::fetch::{Body, Config, Fetch, Fetcher, Hop, Outcome, Response};
+use sea_orm::sea_query::Expr;
 use sea_orm::{
-    ActiveValue::Set, ColumnTrait, Database, DatabaseConnection, EntityTrait, QueryFilter,
-    prelude::Uuid,
+    ActiveValue::Set, ColumnTrait, ConnectionTrait, Database, DatabaseConnection, DbBackend,
+    EntityTrait, QueryFilter, Statement, prelude::Uuid,
 };
 use tokio::sync::{Mutex, MutexGuard};
 
@@ -39,13 +40,40 @@ type Respond = dyn Fn(&str) -> HttpResponse + Send + Sync;
 
 /// CITY だけを持つテスト用サーバー（robots.txt は無し）を立て、そこへ向けた `Fetcher` を作る
 pub async fn serve(respond: impl Fn(&str) -> HttpResponse + Send + Sync + 'static) -> Fetcher {
+    // robots.txt が無いホスト（制限なし）
+    serve_with_robots(|| reply(404).body(Default::default()).unwrap(), respond).await
+}
+
+/// `serve` の robots.txt の応答を `robots` にしたもの
+pub async fn serve_with_robots(
+    robots: impl Fn() -> HttpResponse + Send + Sync + 'static,
+    respond: impl Fn(&str) -> HttpResponse + Send + Sync + 'static,
+) -> Fetcher {
+    serve_hosts(&[CITY], move |_| robots(), respond).await
+}
+
+/// `hosts` のどれも同じテスト用サーバーへ向け、すべて許可リストに入れる。
+/// robots.txt はホスト名（Host ヘッダーからポートを除いたもの）ごとに `robots` が返す
+pub async fn serve_hosts(
+    hosts: &[&str],
+    robots: impl Fn(&str) -> HttpResponse + Send + Sync + 'static,
+    respond: impl Fn(&str) -> HttpResponse + Send + Sync + 'static,
+) -> Fetcher {
+    let robots = Arc::new(robots);
     let respond: Arc<Respond> = Arc::new(respond);
     let app = Router::new().fallback(move |request: Request| {
+        let robots = robots.clone();
         let respond = respond.clone();
         async move {
             match request.uri().path() {
-                // robots.txt が無いホスト（制限なし）
-                "/robots.txt" => reply(404).body(Default::default()).unwrap(),
+                "/robots.txt" => {
+                    let host = request
+                        .headers()
+                        .get(header::HOST)
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or_default();
+                    robots(host.split(':').next().unwrap_or_default())
+                }
                 path => respond(path),
             }
         }
@@ -58,11 +86,12 @@ pub async fn serve(respond: impl Fn(&str) -> HttpResponse + Send + Sync + 'stati
         min_interval: Duration::from_millis(20),
         ..Config::default()
     };
-    let client = Fetcher::client_builder(&config)
-        .resolve(CITY, addr)
-        .build()
-        .unwrap();
-    let allowed = BTreeSet::from([format!("http://{CITY}")]);
+    let mut builder = Fetcher::client_builder(&config);
+    for host in hosts {
+        builder = builder.resolve(host, addr);
+    }
+    let client = builder.build().unwrap();
+    let allowed: BTreeSet<String> = hosts.iter().map(|host| format!("http://{host}")).collect();
     Fetcher::with_client(client, config, allowed)
 }
 
@@ -168,13 +197,7 @@ pub fn not_modified(path: &str) -> Fetch {
 
 /// HTML を読んだ応答から本文を取り出す。取り出せない応答は `None`
 pub fn extracted_of(fetch: &Fetch) -> Option<domain::extract::Extracted> {
-    match &fetch.outcome {
-        Outcome::Response(response) => match &response.body {
-            Body::Html(html) => Some(domain::extract::extract(&html.text, &response.url)),
-            _ => None,
-        },
-        _ => None,
-    }
+    pipeline::crawl::extract_of(fetch)
 }
 
 /// 本文だけが違う 200 のページ
@@ -183,4 +206,25 @@ pub fn body_page(text: &str) -> HttpResponse {
         .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
         .body(format!("<html><head></head><body><main>{text}</main></body></html>").into())
         .unwrap()
+}
+
+/// URL の優先度を変える
+pub async fn set_priority(db: &DatabaseConnection, id: Uuid, priority: i32) {
+    urls_table::Entity::update_many()
+        .col_expr(urls_table::Column::Priority, Expr::value(priority))
+        .filter(urls_table::Column::Id.eq(id))
+        .exec(db)
+        .await
+        .unwrap();
+}
+
+/// URL の状態と次に取る時刻を変える。`next_crawl_at_sql` は `"now() - interval '1 second'"` のような SQL 片
+pub async fn set_status(db: &DatabaseConnection, id: Uuid, status: &str, next_crawl_at_sql: &str) {
+    db.execute_raw(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        format!("update urls set status = $1, next_crawl_at = {next_crawl_at_sql} where id = $2"),
+        [status.into(), id.into()],
+    ))
+    .await
+    .unwrap();
 }

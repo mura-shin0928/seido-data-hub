@@ -1,11 +1,12 @@
 //! 取得の結果を1つのトランザクションで保存する（§13 §15）。
 //!
-//! 履歴・代表 URL と資源の状態（`lifecycle::process`）・ジョブの完了を同じトランザクションに入れる。
+//! 履歴・代表 URL と資源の状態（`lifecycle::process`）・ジョブの完了と次に取る時刻を同じトランザクションに入れる。
 //! 途中で失敗したら何も残らず、その URL はまた対象になる。
 
 use anyhow::Context as _;
 use domain::extract::{self, Extracted};
-use domain::liveness::{Job, Observation};
+use domain::liveness::Observation;
+use domain::schedule::{self, Policy};
 use entity::{content_versions, fetch_history, resources, urls};
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{
@@ -15,7 +16,7 @@ use sea_orm::{
     prelude::{DateTimeWithTimeZone, Uuid},
 };
 
-use crate::fetch::{Fetch, Outcome};
+use crate::fetch::{Body, Fetch, Outcome};
 use crate::lifecycle::{self, Context, Processed};
 
 /// 1回の取得の結果と、それを記録する実行・URL・claim
@@ -27,6 +28,8 @@ pub struct Attempt<'a> {
     pub fetch: &'a Fetch,
     pub extracted: Option<&'a Extracted>,
     pub ctx: &'a Context<'a>,
+    /// 再試行の上限・待ち時間・次に取るまでの間隔
+    pub policy: &'a Policy,
 }
 
 #[derive(Debug)]
@@ -79,11 +82,14 @@ pub async fn record<C: ConnectionTrait + TransactionTrait>(
         }
         _ => None,
     };
+    let pdf = is_pdf(&txn, attempt.fetch, processed.resource_id).await?;
     complete_job(
         &txn,
         &url,
         processed.verdict.job,
         processed.verdict.error_type,
+        pdf,
+        attempt.policy,
     )
     .await?;
 
@@ -92,6 +98,31 @@ pub async fn record<C: ConnectionTrait + TransactionTrait>(
         processed: Box::new(processed),
         previous_body_hash,
     })
+}
+
+/// 次の間隔を PDF のものにするか。本文を読んだ応答は本文の種類で決める。
+/// 本文を読まない 304 は、観測した資源の保存のされ方で決める（PDF は raw_hash だけ、HTML は body_hash も持つ）
+async fn is_pdf(
+    txn: &impl ConnectionTrait,
+    fetch: &Fetch,
+    resource_id: Option<Uuid>,
+) -> anyhow::Result<bool> {
+    let Outcome::Response(response) = &fetch.outcome else {
+        return Ok(false);
+    };
+    match (&response.body, response.status, resource_id) {
+        (Body::Pdf(_), _, _) => Ok(true),
+        (Body::NotRead, 304, Some(resource_id)) => {
+            let resource = resources::Entity::find_by_id(resource_id)
+                .one(txn)
+                .await
+                .context("資源を読めない")?;
+            Ok(resource.is_some_and(|resource| {
+                resource.raw_hash.is_some() && resource.body_hash.is_none()
+            }))
+        }
+        _ => Ok(false),
+    }
 }
 
 /// 履歴を1行追記する。`replace` でなく、この実行でこの URL の行が既にあれば書かずに false
@@ -280,19 +311,19 @@ async fn save_resource(
     Ok(before.body_hash)
 }
 
-/// ジョブを完了にする。回数は取得の記録と同じトランザクションで動かす。
-/// `failed_final` への移行と次の時刻は書かない（再試行の回数を見て決めるのはスケジューラ）
+/// ジョブを完了にし、次の状態と次に取る時刻を書く。回数と時刻は取得の記録と同じトランザクションで動かす。
+/// 状態・回数・間隔は `schedule::next` が決める（再試行の上限を超えたら `failed_final`）。
+/// 時刻は DB の時計（`now()`）からの間隔で書く
 async fn complete_job(
     txn: &impl ConnectionTrait,
     url: &urls::Model,
-    job: Job,
+    job: domain::liveness::Job,
     error_type: Option<&str>,
+    pdf: bool,
+    policy: &Policy,
 ) -> anyhow::Result<()> {
-    let (status, retry_count) = match job {
-        Job::Succeeded => ("succeeded", 0),
-        Job::Blocked => ("blocked", url.retry_count),
-        Job::Retry => ("retry_wait", url.retry_count + 1),
-    };
+    let next = schedule::next(policy, job, url.retry_count, pdf, url.id.as_u128());
+    let (status, retry_count) = (next.status.as_str(), next.retry_count);
     urls::Entity::update_many()
         .col_expr(urls::Column::Status, Expr::value(status))
         .col_expr(
@@ -303,6 +334,13 @@ async fn complete_job(
         .col_expr(
             urls::Column::LastErrorType,
             Expr::value(error_type.map(str::to_string)),
+        )
+        .col_expr(
+            urls::Column::NextCrawlAt,
+            Expr::cust_with_values(
+                "now() + make_interval(secs => $1)",
+                [next.after.as_secs_f64()],
+            ),
         )
         .col_expr(urls::Column::LastCrawledAt, Expr::current_timestamp())
         .col_expr(urls::Column::WorkerId, Expr::value(Option::<String>::None))
