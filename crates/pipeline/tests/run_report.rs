@@ -280,3 +280,85 @@ async fn a_run_that_stopped_halfway_is_rebuilt_from_history() {
     let md = render_markdown(&report.meta, &report.stats, &report.alerts);
     assert!(md.contains("終わっていない"), "{md}");
 }
+
+/// 実行 `run_id` に、`urls` の各 URL の応答を1行ずつ入れる（`n_503` 件だけ 503、残りは 200）
+async fn insert_responses(db: &DatabaseConnection, run_id: Uuid, urls: &[Uuid], n_503: usize) {
+    for (i, url_id) in urls.iter().enumerate() {
+        let status = if i < n_503 { 503 } else { 200 };
+        exec(
+            db,
+            "insert into fetch_history (run_id, url_id, outcome, http_status) \
+             values ($1, $2, 'response', $3)",
+            vec![run_id.into(), (*url_id).into(), status.into()],
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn alerts_are_judged_against_the_previous_run_recounted_from_history() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let mut urls = Vec::new();
+    for n in 0..20 {
+        urls.push(register(&db, &url(&format!("/p{n}.html"))).await);
+    }
+
+    // 前回: 履歴では 503 が 1/20（5%）。保存した集計は 20/20 だったと言っている
+    let previous = start_run(&db).await;
+    insert_responses(&db, previous, &urls, 1).await;
+    let mut tampered = run_report::collect(&db, previous, None).await.unwrap();
+    tampered.hosts.get_mut(CITY_KEY).unwrap().statuses = BTreeMap::from([(503, 20)]);
+    run_report::close(&db, previous, &tampered, &[])
+        .await
+        .unwrap();
+    exec(
+        &db,
+        "update crawl_runs set started_at = now() - interval '1 minute' where id = $1",
+        vec![previous.into()],
+    )
+    .await;
+
+    // 今回: 503 が 5/20（25%）
+    let current = start_run(&db).await;
+    insert_responses(&db, current, &urls, 5).await;
+    let stats = run_report::collect(&db, current, None).await.unwrap();
+
+    // 保存値（100%）と比べるなら抑えられるが、履歴から数え直した 5% の2倍（10%）は超える
+    let alerts = run_report::alerts_for(&db, current, &stats).await.unwrap();
+    assert_eq!(
+        alerts,
+        vec![Alert::HostErrorsSurged {
+            host: CITY_KEY.to_string(),
+            count: 5,
+            rate: 0.25,
+            previous_rate: Some(0.05),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn without_a_previous_run_the_comparison_with_it_is_dropped() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let mut urls = Vec::new();
+    for n in 0..20 {
+        urls.push(register(&db, &url(&format!("/p{n}.html"))).await);
+    }
+    let current = start_run(&db).await;
+    insert_responses(&db, current, &urls, 5).await;
+    let stats = run_report::collect(&db, current, None).await.unwrap();
+
+    let alerts = run_report::alerts_for(&db, current, &stats).await.unwrap();
+    assert_eq!(
+        alerts,
+        vec![Alert::HostErrorsSurged {
+            host: CITY_KEY.to_string(),
+            count: 5,
+            rate: 0.25,
+            previous_rate: None,
+        }]
+    );
+}

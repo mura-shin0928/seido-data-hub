@@ -275,23 +275,15 @@ async fn run_row(db: &impl ConnectionTrait, run_id: Option<Uuid>) -> anyhow::Res
         .context("該当する実行が無い")
 }
 
-/// 実行の集計を保存してあればそれを、無ければ履歴から数える（counters は None）
-async fn stats_of(db: &impl ConnectionTrait, run_id: Uuid) -> anyhow::Result<RunStats> {
-    let row = run_row(db, Some(run_id)).await?;
-    match row.stats {
-        Some(value) => serde_json::from_value(value).context("保存した集計を読めない"),
-        None => collect(db, run_id, None).await,
-    }
-}
-
 /// 前回と比べた警告（前回が無ければ前回なしで判定する）
 pub async fn alerts_for(
     db: &impl ConnectionTrait,
     run_id: Uuid,
     stats: &RunStats,
 ) -> anyhow::Result<Vec<Alert>> {
+    // 前回の集計は、保存した値ではなく履歴から数え直す（数え方を変えても同じ定義で比べるため）
     let previous = match previous_run(db, run_id).await? {
-        Some(previous) => Some(stats_of(db, previous).await?),
+        Some(previous) => Some(collect(db, previous, None).await?),
         None => None,
     };
     Ok(alerts(stats, previous.as_ref(), &Thresholds::default()))
