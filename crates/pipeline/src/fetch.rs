@@ -306,6 +306,10 @@ impl Fetcher {
         Ok(prepared)
     }
 
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
+
     /// そのホストへ次に送ってよい時刻。送ったことが無い・いま送っている途中なら None
     pub fn ready_at(&self, host_key: &str) -> Option<Instant> {
         let host = self

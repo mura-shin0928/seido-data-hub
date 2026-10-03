@@ -13,6 +13,7 @@ use std::time::Duration;
 use axum::body::Bytes;
 use common::*;
 use domain::liveness::HostMove;
+use domain::run_report::{Alert, Counters};
 use domain::schedule::Policy;
 use entity::crawl_runs;
 use entity::{fetch_history, resources, urls as urls_table};
@@ -25,6 +26,7 @@ use pipeline::fetch::Fetcher;
 use pipeline::host_moves;
 use pipeline::lifecycle::Context;
 use pipeline::persist::{Attempt, record};
+use pipeline::run_report::Report;
 use sea_orm::{
     ActiveValue::Set, ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, EntityTrait,
     QueryFilter, Statement, prelude::Uuid,
@@ -599,7 +601,10 @@ async fn urls_of_two_hosts_linked_to_one_resource_are_not_claimed_together() {
 }
 
 /// 実行を記録して回す。ループが終わらない不具合はハングではなく失敗にする
-async fn run_recorded_once(db: &DatabaseConnection, fetcher: &Arc<Fetcher>) -> (Uuid, Summary) {
+async fn run_recorded_once(
+    db: &DatabaseConnection,
+    fetcher: &Arc<Fetcher>,
+) -> (Uuid, Summary, Report) {
     timeout(
         Duration::from_secs(10),
         run_recorded(db, fetcher.clone(), "sweep", &run_config()),
@@ -618,7 +623,7 @@ async fn a_recorded_run_is_closed_and_a_second_run_right_after_fetches_nothing()
     register(&db, &url("/a.html")).await;
     register(&db, &url("/b.html")).await;
 
-    let (first, summary) = run_recorded_once(&db, &fetcher).await;
+    let (first, summary, _) = run_recorded_once(&db, &fetcher).await;
     assert_eq!(summary.saved, 2);
     let row = crawl_runs::Entity::find_by_id(first)
         .one(&db)
@@ -629,7 +634,7 @@ async fn a_recorded_run_is_closed_and_a_second_run_right_after_fetches_nothing()
     assert!(row.finished_at.is_some());
 
     // 成功した行は7日後まで候補に出ない
-    let (second, summary) = run_recorded_once(&db, &fetcher).await;
+    let (second, summary, _) = run_recorded_once(&db, &fetcher).await;
     assert_ne!(second, first);
     assert_eq!(summary.saved, 0);
     assert_eq!(
@@ -665,7 +670,7 @@ async fn two_new_urls_on_different_hosts_redirecting_to_one_page_share_a_resourc
     let a = register(&db, &url("/a.html")).await;
     let b = register(&db, &format!("http://{TOWN}/b.html")).await;
 
-    let (_, summary) = run_recorded_once(&db, &fetcher).await;
+    let (_, summary, _) = run_recorded_once(&db, &fetcher).await;
 
     assert_eq!(summary.saved, 2);
     let all = all_resources(&db).await;
@@ -675,4 +680,113 @@ async fn two_new_urls_on_different_hosts_redirecting_to_one_page_share_a_resourc
     assert_eq!(links_of(&db, b).await[0].resource_id, all[0].id);
     assert_eq!(url_row(&db, a).await.status, "succeeded");
     assert_eq!(url_row(&db, b).await.status, "succeeded");
+}
+
+#[tokio::test]
+async fn a_recorded_run_keeps_its_stats_config_and_a_summary() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let fetcher = Arc::new(serve(|_| page(None)).await);
+    register(&db, &url("/a.html")).await;
+    register(&db, &url("/b.html")).await;
+
+    let (first, _, report) = run_recorded_once(&db, &fetcher).await;
+    assert_eq!(
+        report.stats.totals().statuses,
+        std::collections::BTreeMap::from([(200u16, 2u64)])
+    );
+    assert!(report.alerts.is_empty());
+    let row = crawl_runs::Entity::find_by_id(first)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.config.unwrap()["concurrency"], 4);
+    let saved: domain::run_report::RunStats =
+        serde_json::from_value(row.stats.expect("stats を残す")).unwrap();
+    assert_eq!(saved, report.stats);
+
+    // 何も取らなかった実行は警告にしない
+    let (_, _, second) = run_recorded_once(&db, &fetcher).await;
+    assert!(second.stats.hosts.is_empty());
+    assert!(second.alerts.is_empty());
+}
+
+#[tokio::test]
+async fn a_retry_and_a_reclaimed_lease_are_counted_by_the_loop() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let calls = Arc::new(AtomicUsize::new(0));
+    let fetcher = Arc::new(
+        serve({
+            let calls = calls.clone();
+            move |path| match path {
+                "/flaky.html" if calls.fetch_add(1, Ordering::SeqCst) == 0 => {
+                    reply(503).body(Default::default()).unwrap()
+                }
+                _ => page(None),
+            }
+        })
+        .await,
+    );
+    register(&db, &url("/flaky.html")).await;
+    let left = register(&db, &url("/left.html")).await;
+    claim::claim(&db, &[left], "dead", Duration::from_secs(600))
+        .await
+        .unwrap();
+    db.execute_raw(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        "update urls set lease_until = now() - interval '1 second' where id = $1",
+        [left.into()],
+    ))
+    .await
+    .unwrap();
+
+    let (_, summary, report) = run_recorded_once(&db, &fetcher).await;
+
+    assert_eq!(summary.retries, 1);
+    assert_eq!(summary.lease_expired, 1);
+    assert_eq!(
+        report.stats.counters,
+        Some(Counters {
+            retries: 1,
+            lease_expired: 1
+        })
+    );
+    // 再試行の 503 は 200 に置き換わって残らない
+    assert_eq!(
+        report.stats.hosts[&format!("http://{CITY}")].statuses,
+        std::collections::BTreeMap::from([(200u16, 2u64)])
+    );
+}
+
+#[tokio::test]
+async fn a_run_where_robots_txt_cannot_be_read_anywhere_is_recorded_with_an_alert() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let fetcher = Arc::new(
+        serve_with_robots(
+            || reply(503).body(Default::default()).unwrap(),
+            |_| page(None),
+        )
+        .await,
+    );
+    register(&db, &url("/a.html")).await;
+
+    let (run_id, _, report) = run_recorded_once(&db, &fetcher).await;
+
+    assert_eq!(report.alerts, vec![Alert::AllFailed { fetched: 1 }]);
+    let row = crawl_runs::Entity::find_by_id(run_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(row.finished_at.is_some());
+    assert!(
+        row.alerts
+            .is_some_and(|alerts| alerts != serde_json::json!([]))
+    );
 }

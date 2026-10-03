@@ -34,6 +34,8 @@ pub struct Claim {
     pub host_key: String,
     /// いま結ばれている資源（url_resources の observed_at が最新）。無ければ None
     pub resource_id: Option<Uuid>,
+    /// claim する前の行が `processing`（持ち主の lease が切れていた）だった
+    pub lease_expired: bool,
 }
 
 /// 候補から外すもの
@@ -143,7 +145,7 @@ pub async fn claim(
     }
     let sql = format!(
         "WITH picked AS (\
-            SELECT u.id FROM urls u \
+            SELECT u.id, (u.status = 'processing') AS lease_expired FROM urls u \
             WHERE u.id = ANY($1) AND {} \
             FOR UPDATE OF u SKIP LOCKED) \
          UPDATE urls SET status = 'processing', worker_id = $2, \
@@ -152,7 +154,8 @@ pub async fn claim(
          FROM picked WHERE urls.id = picked.id \
          RETURNING urls.id AS url_id, urls.claim_token, urls.normalized_url AS url, urls.host_key, \
              (SELECT ur.resource_id FROM url_resources ur \
-              WHERE ur.url_id = urls.id ORDER BY ur.observed_at DESC LIMIT 1) AS resource_id",
+              WHERE ur.url_id = urls.id ORDER BY ur.observed_at DESC LIMIT 1) AS resource_id, \
+             picked.lease_expired",
         claimable(true)
     );
     let mut claims = Claim::find_by_statement(Statement::from_sql_and_values(
