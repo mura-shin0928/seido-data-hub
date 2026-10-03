@@ -11,6 +11,12 @@ pub struct Model {
     pub kind: String,
     pub started_at: DateTimeWithTimeZone,
     pub finished_at: Option<DateTimeWithTimeZone>,
+    #[sea_orm(column_type = "JsonBinary", nullable)]
+    pub config: Option<Json>,
+    #[sea_orm(column_type = "JsonBinary", nullable)]
+    pub stats: Option<Json>,
+    #[sea_orm(column_type = "JsonBinary", nullable)]
+    pub alerts: Option<Json>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

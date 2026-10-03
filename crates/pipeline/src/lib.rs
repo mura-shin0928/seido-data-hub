@@ -6,3 +6,4 @@ pub mod import_registry;
 pub mod lifecycle;
 pub mod persist;
 pub mod resources;
+pub mod run_report;
