@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
+use std::path::Path;
 use std::sync::Arc;
-use std::time::Instant;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -8,9 +8,11 @@ use domain::canonical::Decision;
 use domain::extract::{self, Extracted};
 use domain::fetch::CharsetSource;
 use domain::liveness::Verdict;
+use domain::run_report::render_markdown;
 use pipeline::crawl;
 use pipeline::fetch::{Body, Config, Fetcher, Outcome, Validators};
-use pipeline::{host_moves, import_registry, lifecycle, resources};
+use pipeline::{host_moves, import_registry, lifecycle, resources, run_report};
+use sea_orm::prelude::Uuid;
 
 #[derive(Parser)]
 #[command(about = "seido-data-hub のデータ取り込み・更新")]
@@ -42,11 +44,19 @@ enum Command {
         last_modified: Option<String>,
     },
     /// 時刻の来た URL を取得して記録する（DATABASE_URL を使う）。同時16件・同一ホスト1件・2秒間隔で robots.txt を守る。
-    /// 途中で止めたら、10分（lease）後に流し直せば続きから進む
+    /// 途中で止めたら、10分（lease）後に流し直せば続きから進む。
+    /// 終わりに実行サマリーを出す。§22 の警告に当たったら、記録したうえで終了コード1で終える
     Crawl {
         /// crawl_runs に残す実行の種類（例: sweep）
         #[arg(long, default_value = "manual")]
         kind: String,
+    },
+    /// 実行のサマリーを出す（DATABASE_URL を使う）。既定は最新の実行。
+    /// 途中で止まった実行は履歴から数え直す（再試行・lease 切れの数は出ない）
+    RunReport {
+        /// 実行の id（省略すると最新の実行）
+        #[arg(long)]
+        run: Option<Uuid>,
     },
     /// 転送で見つかったホスト移行を、許可リストに入れてよいものとして承認する（DATABASE_URL を使う）。
     /// 承認するのは、移行先が本物で同じ組織のサイトだと確かめてから
@@ -119,18 +129,27 @@ async fn main() -> anyhow::Result<()> {
             let db = sea_orm::Database::connect(&database_url).await?;
             let allowed = crawl::allowed_hosts(&db).await?;
             let fetcher = Arc::new(Fetcher::new(Config::default(), allowed)?);
-            let started = Instant::now();
-            let (run_id, summary) =
+            let (_, _, report) =
                 crawl::run_recorded(&db, fetcher, &kind, &crawl::Config::default()).await?;
-            println!(
-                "実行 {run_id}（{kind}）: 記録 {} 件 / claim を取られていた {} 件 / {} 秒",
-                summary.saved,
-                summary.stale,
-                started.elapsed().as_secs()
-            );
-            for host in &summary.skipped_hosts {
-                println!("  robots.txt が読めず見送ったホスト: {host}");
+            let markdown = render_markdown(&report.meta, &report.stats, &report.alerts);
+            println!("{markdown}");
+            if let Some(path) = std::env::var_os("GITHUB_STEP_SUMMARY")
+                && let Err(e) = run_report::append_step_summary(Path::new(&path), &markdown)
+            {
+                eprintln!("警告: 実行サマリーを書けない: {e}");
             }
+            if !report.alerts.is_empty() {
+                anyhow::bail!("警告が {} 件ある（crawl_runs.alerts）", report.alerts.len());
+            }
+        }
+        Command::RunReport { run } => {
+            let database_url = std::env::var("DATABASE_URL").context("DATABASE_URL が無い")?;
+            let db = sea_orm::Database::connect(&database_url).await?;
+            let report = run_report::load(&db, run).await?;
+            println!(
+                "{}",
+                render_markdown(&report.meta, &report.stats, &report.alerts)
+            );
         }
         Command::ApproveHostMove { from, to } => {
             let database_url = std::env::var("DATABASE_URL").context("DATABASE_URL が無い")?;

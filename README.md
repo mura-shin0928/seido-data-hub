@@ -70,6 +70,15 @@ cargo run --release -p pipeline -- crawl --kind sweep
 文字コード・資源への観測・エラーの理由）。成功した URL は次の時刻（HTML 7日・PDF 30日）まで取らないので、
 続けて流しても取り直さない。途中で止めたら、10分（lease の長さ）後に流し直せば続きから進む。
 
+終わりに実行サマリー（ホスト別の status・304 の割合・変更率・404 など）を出し、`crawl_runs` の `stats`・`alerts` にも残す。
+Actions では `GITHUB_STEP_SUMMARY` に追記する。429・5xx の急増・全件失敗・変更率50%超・lease 切れの多発に当たったら、
+記録したうえで終了コード1で終える。過去の実行のサマリーは `run-report` で見る（DB には書かない）:
+
+```bash
+cargo run -p pipeline -- run-report            # 最新の実行
+cargo run -p pipeline -- run-report --run <id> # 実行を指定
+```
+
 テスト（統合テストは `TEST_DATABASE_URL` のデータベースを毎回作り直す）:
 
 ```bash

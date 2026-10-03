@@ -8,10 +8,10 @@ use std::time::Duration;
 use anyhow::Context as _;
 use domain::canonical::{self, Declaration};
 use domain::extract::{self, Extracted};
+use domain::run_report::{ConfigSnapshot, Counters};
 use domain::schedule::Policy;
 use domain::urls;
 use entity::{crawl_runs, resources, urls as urls_table};
-use sea_orm::sea_query::Expr;
 use sea_orm::{
     ActiveValue::Set, ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, EntityTrait,
     FromQueryResult, QueryFilter, QuerySelect, Statement, prelude::Uuid,
@@ -20,10 +20,12 @@ use tokio::task::JoinSet;
 use tokio::time::{Instant, MissedTickBehavior};
 
 use crate::claim::{self, Claim, Exclude};
+use crate::fetch;
 use crate::fetch::{Body, Fetch, Fetcher, Outcome, Validators};
 use crate::host_moves;
 use crate::lifecycle::Context;
 use crate::persist::{self, Attempt, Recorded};
+use crate::run_report::{self, Report};
 
 /// 実行の設定
 #[derive(Debug, Clone)]
@@ -70,6 +72,24 @@ pub struct Summary {
     pub stale: usize,
     /// robots.txt が読めず、この実行の残りで見送ったホスト
     pub skipped_hosts: BTreeSet<String>,
+    /// この実行で既に claim した URL をもう一度 claim した数（再試行）
+    pub retries: usize,
+    /// lease の切れた行を claim し直した数
+    pub lease_expired: usize,
+}
+
+/// 実行の設定の控え（`crawl_runs.config`）
+pub fn snapshot(config: &Config, fetch: &fetch::Config) -> ConfigSnapshot {
+    ConfigSnapshot {
+        worker_id: config.worker_id.clone(),
+        concurrency: config.concurrency,
+        min_interval_ms: fetch.min_interval.as_millis() as u64,
+        lease_secs: config.lease.as_secs(),
+        heartbeat_secs: config.heartbeat.as_secs(),
+        connect_timeout_ms: fetch.connect_timeout.as_millis() as u64,
+        timeout_ms: fetch.timeout.as_millis() as u64,
+        max_retries: config.policy.max_retries,
+    }
 }
 
 /// 取得中の1件
@@ -105,6 +125,8 @@ pub async fn run(
     // 資源 → この実行でそれを最初に取った URL
     let mut taken_resources: BTreeMap<Uuid, Uuid> = BTreeMap::new();
     let mut trusted: HashMap<String, bool> = HashMap::new();
+    // この実行で claim した URL（もう一度 claim したら再試行と数える）
+    let mut attempted: BTreeSet<Uuid> = BTreeSet::new();
     // 戻るとき（エラーを含む）に JoinSet を落とせば、残りのタスクは止まる
     let mut tasks: JoinSet<anyhow::Result<Done>> = JoinSet::new();
     let mut heartbeat =
@@ -147,6 +169,12 @@ pub async fn run(
                 .map(|candidate| candidate.url_id)
                 .collect();
             for claim in claim::claim(db, &ids, &config.worker_id, config.lease).await? {
+                if !attempted.insert(claim.url_id) {
+                    summary.retries += 1;
+                }
+                if claim.lease_expired {
+                    summary.lease_expired += 1;
+                }
                 let host_trusted = match trusted.get(&claim.host_key) {
                     Some(trusted) => *trusted,
                     None => {
@@ -225,16 +253,19 @@ pub async fn run(
     Ok(summary)
 }
 
-/// crawl_runs に `kind` の実行を作り、run を回し、正常に終えたら finished_at を書く。
-/// 失敗したら finished_at は空のまま（終わらなかった実行として残る）、エラーに run_id を添えて返す
+/// crawl_runs に `kind` の実行を（設定の控えとともに）作り、run を回し、正常に終えたら集計と警告を書いて
+/// finished_at を埋める。失敗したら finished_at・stats は空のまま（終わらなかった実行として残る）、
+/// エラーに run_id を添えて返す
 pub async fn run_recorded(
     db: &DatabaseConnection,
     fetcher: Arc<Fetcher>,
     kind: &str,
     config: &Config,
-) -> anyhow::Result<(Uuid, Summary)> {
+) -> anyhow::Result<(Uuid, Summary, Report)> {
+    let snapshot = serde_json::to_value(snapshot(config, fetcher.config()))?;
     let run_id = crawl_runs::Entity::insert(crawl_runs::ActiveModel {
         kind: Set(kind.to_string()),
+        config: Set(Some(snapshot)),
         ..Default::default()
     })
     .exec(db)
@@ -244,13 +275,23 @@ pub async fn run_recorded(
     let summary = run(db, fetcher, run_id, config)
         .await
         .with_context(|| format!("実行 {run_id} が途中で止まった"))?;
-    crawl_runs::Entity::update_many()
-        .col_expr(crawl_runs::Column::FinishedAt, Expr::cust("now()"))
-        .filter(crawl_runs::Column::Id.eq(run_id))
-        .exec(db)
+    let counters = Counters {
+        retries: summary.retries as u64,
+        lease_expired: summary.lease_expired as u64,
+    };
+    let stats = run_report::collect(db, run_id, Some(counters))
         .await
-        .with_context(|| format!("実行 {run_id} の終わりを書けない"))?;
-    Ok((run_id, summary))
+        .with_context(|| format!("実行 {run_id} の集計を数えられない"))?;
+    let alerts = run_report::alerts_for(db, run_id, &stats)
+        .await
+        .with_context(|| format!("実行 {run_id} の警告を判定できない"))?;
+    run_report::close(db, run_id, &stats, &alerts)
+        .await
+        .with_context(|| format!("実行 {run_id} を締められない"))?;
+    let report = run_report::load(db, Some(run_id))
+        .await
+        .with_context(|| format!("実行 {run_id} の報告を読めない"))?;
+    Ok((run_id, summary, report))
 }
 
 /// 1件: validator を引く → 取得 → 抽出 → 記録
