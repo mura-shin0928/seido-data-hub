@@ -2,8 +2,12 @@
 //!
 //! 履歴・代表 URL と資源の状態（`lifecycle::process`）・ジョブの完了と次に取る時刻を同じトランザクションに入れる。
 //! 途中で失敗したら何も残らず、その URL はまた対象になる。
+//!
+//! 内容を書くときは前回の内容と比べ（`domain::change`）、変わったときだけ資源の `last_changed_at` と `change_count` を進める。
+//! 比べた結果は呼び出し側へ返す。
 
 use anyhow::Context as _;
+use domain::change::{self, Change};
 use domain::extract::{self, Extracted};
 use domain::liveness::Observation;
 use domain::schedule::{self, Policy};
@@ -11,8 +15,8 @@ use entity::{content_versions, fetch_history, resources, urls};
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{
     ActiveValue::Set,
-    ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QuerySelect, TransactionSession,
-    TransactionTrait,
+    ColumnTrait, ConnectionTrait, EntityTrait, ExprTrait, QueryFilter, QuerySelect,
+    TransactionSession, TransactionTrait,
     prelude::{DateTimeWithTimeZone, Uuid},
 };
 
@@ -36,8 +40,8 @@ pub struct Attempt<'a> {
 pub enum Recorded {
     Saved {
         processed: Box<Processed>,
-        /// 内容を上書きしたときの、上書き前の `body_hash`（初回・上書きなしは無い）。変化の判定に使う
-        previous_body_hash: Option<String>,
+        /// 前回の内容と比べた結果。次に取るまでの間隔の調整に使う
+        change: Change,
     },
     /// この実行でこの URL は記録済み。何も書いていない（同じ実行の流し直し）
     AlreadyRecorded,
@@ -76,11 +80,11 @@ pub async fn record<C: ConnectionTrait + TransactionTrait>(
         attempt.ctx,
     )
     .await?;
-    let previous_body_hash = match (processed.resource_id, processed.verdict.observation) {
+    let change = match (processed.resource_id, processed.verdict.observation) {
         (Some(resource_id), Some(observation)) => {
             save_resource(&txn, resource_id, observation, attempt).await?
         }
-        _ => None,
+        _ => Change::Unknown,
     };
     let pdf = is_pdf(&txn, attempt.fetch, processed.resource_id).await?;
     complete_job(
@@ -96,7 +100,7 @@ pub async fn record<C: ConnectionTrait + TransactionTrait>(
     txn.commit().await?;
     Ok(Recorded::Saved {
         processed: Box::new(processed),
-        previous_body_hash,
+        change,
     })
 }
 
@@ -218,17 +222,19 @@ fn describe(outcome: &Outcome) -> (&'static str, Option<String>) {
 }
 
 /// 観測を当てた資源に、取得の時刻と、読みきった生きている200の内容を書く。
-/// 内容を書いたときは上書き前の `body_hash` を返す。
+/// 内容を書くときは上書き前の内容と比べ、変わっていれば同じ更新で `last_changed_at` と `change_count` を進める。
 ///
 /// 内容はソフト404・304・404 などでは書かない（生きていたときの内容を、復活の比較のために残す）。
+/// そのため復活したページは、最後に生きていた内容と比べる。
 /// 応答に無い値は NULL で上書きする（消えた validator を送り続けない）。
-/// `last_changed_at`・`change_count`・`next_crawl_at` は動かさない。
+/// 内容を書かない分岐の結果は、304 と生きていない観測は `Unchanged`、本文を読まなかった 200 は `Unknown`。
+/// `next_crawl_at` は動かさない。
 async fn save_resource(
     txn: &impl ConnectionTrait,
     resource_id: Uuid,
     observation: Observation,
     attempt: &Attempt<'_>,
-) -> anyhow::Result<Option<String>> {
+) -> anyhow::Result<Change> {
     let readable = match &attempt.fetch.outcome {
         Outcome::Response(response) if observation == Observation::Alive => response
             .raw_hash
@@ -244,7 +250,15 @@ async fn save_resource(
             .exec(txn)
             .await
             .context("資源の取得時刻を書けない")?;
-        return Ok(None);
+        let not_modified = matches!(
+            &attempt.fetch.outcome,
+            Outcome::Response(response) if response.status == 304
+        );
+        return Ok(if not_modified || observation != Observation::Alive {
+            Change::Unchanged
+        } else {
+            Change::Unknown
+        });
     };
 
     let before = resources::Entity::find_by_id(resource_id)
@@ -254,7 +268,35 @@ async fn save_resource(
         .context("資源を読めない")?
         .context("資源が無い")?;
     let extracted = attempt.extracted;
-    resources::Entity::update_many()
+    let previous = before
+        .body_hash
+        .as_deref()
+        .or(before.raw_hash.as_deref())
+        .map(|hash| change::Content {
+            hash,
+            extractor_version: before.extractor_version,
+        });
+    let current = match extracted {
+        Some(extracted) => change::Content {
+            hash: &extracted.hashes.body,
+            extractor_version: Some(extract::EXTRACTOR_VERSION),
+        },
+        None => change::Content {
+            hash: raw_hash,
+            extractor_version: None,
+        },
+    };
+    let change = change::compare(previous, current);
+    let mut update = resources::Entity::update_many();
+    if change == Change::Changed {
+        update = update
+            .col_expr(resources::Column::LastChangedAt, Expr::current_timestamp())
+            .col_expr(
+                resources::Column::ChangeCount,
+                Expr::col(resources::Column::ChangeCount).add(1),
+            );
+    }
+    update
         .col_expr(resources::Column::RawHash, Expr::value(raw_hash.clone()))
         .col_expr(resources::Column::Etag, Expr::value(response.etag.clone()))
         .col_expr(
@@ -321,7 +363,7 @@ async fn save_resource(
         .await
         .context("content_versions を書けない")?;
     }
-    Ok(before.body_hash)
+    Ok(change)
 }
 
 /// ジョブを完了にし、次の状態と次に取る時刻を書く。回数と時刻は取得の記録と同じトランザクションで動かす。

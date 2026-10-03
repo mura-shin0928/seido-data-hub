@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::time::Duration;
 
 use common::*;
+use domain::change::Change;
 use domain::extract;
 use domain::schedule::Policy;
 use entity::{content_versions, fetch_history, resources, urls};
@@ -17,7 +18,7 @@ use pipeline::lifecycle::Context;
 use pipeline::persist::{Attempt, Recorded, record};
 use sea_orm::{
     ActiveValue::Set, ColumnTrait, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait,
-    PaginatorTrait, QueryFilter, Statement, TransactionTrait, prelude::Uuid,
+    PaginatorTrait, QueryFilter, TransactionTrait, prelude::Uuid,
 };
 
 async fn insert_history(db: &DatabaseConnection, run_id: Uuid, url_id: Uuid) -> Result<u64, DbErr> {
@@ -343,13 +344,10 @@ async fn an_alive_page_saves_its_hashes_validators_and_a_version() {
     let fetch = get(&fetcher, "/a.html").await;
     let run = start_run(&db).await;
 
-    let Recorded::Saved {
-        previous_body_hash, ..
-    } = record_fetch(&db, run, id, 0, &fetch).await
-    else {
+    let Recorded::Saved { change, .. } = record_fetch(&db, run, id, 0, &fetch).await else {
         panic!("保存される");
     };
-    assert_eq!(previous_body_hash, None);
+    assert_eq!(change, Change::Unknown);
 
     let extracted = extracted_of(&fetch).unwrap();
     let resource = only_resource(&db).await;
@@ -392,7 +390,7 @@ async fn an_alive_page_saves_its_hashes_validators_and_a_version() {
 }
 
 #[tokio::test]
-async fn a_changed_body_adds_a_version_and_hands_back_the_previous_hash() {
+async fn a_changed_body_adds_a_version_and_is_reported_as_changed() {
     let Some((db, _guard)) = fresh_db().await else {
         return;
     };
@@ -416,13 +414,12 @@ async fn a_changed_body_adds_a_version_and_hands_back_the_previous_hash() {
 
     second.store(true, Ordering::SeqCst);
     let changed = get(&fetcher, "/a.html").await;
-    let Recorded::Saved {
-        previous_body_hash, ..
-    } = record_fetch(&db, start_run(&db).await, id, 0, &changed).await
+    let Recorded::Saved { change, .. } =
+        record_fetch(&db, start_run(&db).await, id, 0, &changed).await
     else {
         panic!("保存される");
     };
-    assert_eq!(previous_body_hash.as_deref(), Some(first_hash.as_str()));
+    assert_eq!(change, Change::Changed);
     let second_hash = only_resource(&db).await.body_hash.unwrap();
     assert_ne!(first_hash, second_hash);
     assert_eq!(versions(&db).await.len(), 2);
@@ -482,13 +479,12 @@ async fn a_304_keeps_the_content_and_only_moves_last_crawled_at() {
     record_fetch(&db, start_run(&db).await, id, 0, &alive).await;
     let before = only_resource(&db).await;
 
-    let Recorded::Saved {
-        previous_body_hash, ..
-    } = record_fetch(&db, start_run(&db).await, id, 0, &not_modified("/a.html")).await
+    let Recorded::Saved { change, .. } =
+        record_fetch(&db, start_run(&db).await, id, 0, &not_modified("/a.html")).await
     else {
         panic!("保存される");
     };
-    assert_eq!(previous_body_hash, None);
+    assert_eq!(change, Change::Unchanged);
 
     let after = only_resource(&db).await;
     assert_eq!(after.body_hash, before.body_hash);
@@ -586,42 +582,7 @@ async fn a_retry_in_the_same_run_replaces_the_earlier_attempt() {
     ));
 }
 
-/// `next_crawl_at - now()` を秒で返す
-async fn seconds_until_next(db: &DatabaseConnection, id: Uuid) -> i64 {
-    let row = db
-        .query_one_raw(Statement::from_sql_and_values(
-            db.get_database_backend(),
-            "SELECT extract(epoch from next_crawl_at - now())::float8 AS secs FROM urls WHERE id = $1",
-            [id.into()],
-        ))
-        .await
-        .unwrap()
-        .unwrap();
-    row.try_get::<f64>("", "secs").unwrap().round() as i64
-}
-
 const DAY: i64 = 24 * 60 * 60;
-
-fn pdf_fetch(status: u16) -> Fetch {
-    Fetch {
-        hops: vec![Hop {
-            url: url("/a.pdf"),
-            status,
-            elapsed: Duration::ZERO,
-        }],
-        outcome: Outcome::Response(Response {
-            url: url("/a.pdf"),
-            status,
-            etag: None,
-            last_modified: None,
-            content_type: Some("application/pdf".to_string()),
-            x_robots_tag: None,
-            body: Body::Pdf(b"%PDF-1.7".to_vec()),
-            bytes: 8,
-            raw_hash: Some(extract::digest(b"%PDF-1.7")),
-        }),
-    }
-}
 
 #[tokio::test]
 async fn a_success_schedules_the_next_crawl_a_week_later() {
@@ -675,7 +636,14 @@ async fn a_pdf_waits_thirty_days_and_blocked_waits_a_week() {
         return;
     };
     let pdf = register(&db, &url("/a.pdf")).await;
-    record_fetch(&db, start_run(&db).await, pdf, 0, &pdf_fetch(200)).await;
+    record_fetch(
+        &db,
+        start_run(&db).await,
+        pdf,
+        0,
+        &pdf_fetch(200, b"%PDF-1.7"),
+    )
+    .await;
     assert!((seconds_until_next(&db, pdf).await - 30 * DAY).abs() <= 60);
 
     let fetcher = serve(|_| empty(403)).await;
@@ -692,7 +660,14 @@ async fn a_304_for_a_pdf_waits_thirty_days() {
         return;
     };
     let pdf = register(&db, &url("/a.pdf")).await;
-    record_fetch(&db, start_run(&db).await, pdf, 0, &pdf_fetch(200)).await;
+    record_fetch(
+        &db,
+        start_run(&db).await,
+        pdf,
+        0,
+        &pdf_fetch(200, b"%PDF-1.7"),
+    )
+    .await;
     // 本文を読まない 304 でも、保存した資源が PDF なら PDF の間隔
     record_fetch(&db, start_run(&db).await, pdf, 0, &not_modified("/a.pdf")).await;
     assert_eq!(url_row(&db, pdf).await.status, "succeeded");
