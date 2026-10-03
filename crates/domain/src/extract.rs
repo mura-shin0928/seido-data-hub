@@ -1,7 +1,7 @@
 //! 取得した HTML から本文を取り出し、変化を比べるためのハッシュを作る（§16 §19 §20）。
 //!
 //! ```text
-//! HTML → 本文コンテナの抽出 → script/style/nav/header/footer/コメント除去
+//! HTML → 本文コンテナの抽出 → script/style/nav/header/footer/aside/コメント除去
 //!      → 空白・Unicode（NFKC）正規化 → ハッシュ
 //! ```
 
@@ -19,14 +19,16 @@ use url::Url;
 use crate::urls;
 
 /// 抽出の規則・除去する要素・正規化のどれかを変えたら上げる。
-/// 規則の変更とサイトの変更を区別するため、ハッシュと一緒に残す
-pub const EXTRACTOR_VERSION: i32 = 1;
+/// 規則の変更とサイトの変更を区別するため、ハッシュと一緒に残す。
+///
+/// - 2: 本文コンテナの中の aside も除く（閲覧の多いページの一覧が日ごとに変わるため）
+pub const EXTRACTOR_VERSION: i32 = 2;
 
 /// 画面に出ない要素。本文からもページ全体からも除く
 const HIDDEN: [&str; 4] = ["script", "style", "noscript", "template"];
 
 /// 本文から除く、ページの枠の要素（§16）
-const CHROME: [&str; 3] = ["nav", "header", "footer"];
+const CHROME: [&str; 4] = ["nav", "header", "footer", "aside"];
 
 /// 前後で行を分ける要素。インライン要素（`<b>` など）では分けない（「子<b>育</b>て」を割らないため）
 const BLOCKS: [&str; 39] = [
@@ -80,7 +82,7 @@ pub enum Rule {
     Content,
     Honbun,
     Article,
-    /// どれにも当たらないときの最後の手段。`<body>` から aside も除く
+    /// どれにも当たらないときの最後の手段。`<body>` から枠を除く
     Body,
 }
 
@@ -173,15 +175,10 @@ pub fn extract(html: &str, url: &str) -> Extracted {
     let base = base_url(root, url);
 
     let (rule, container) = container(body);
-    let chrome: &[&str] = if rule == Rule::Body {
-        &["nav", "header", "footer", "aside"]
-    } else {
-        &CHROME
-    };
     let mut links = BTreeSet::new();
     let body_text = normalize(&text(
         container,
-        &|e| is(e, &HIDDEN) || is(e, chrome),
+        &|e| is(e, &HIDDEN) || is(e, &CHROME),
         &mut |a| {
             if let Some(link) = resolve_link(a, base.as_ref()) {
                 links.insert(link);
@@ -437,6 +434,36 @@ mod tests {
     }
 
     #[test]
+    fn asides_inside_the_container_are_removed() {
+        // 墨田区の形: main の中に、閲覧の多いページの一覧（日ごとに変わる）
+        let at = |list: &str| {
+            extract(
+                &page(
+                    "",
+                    &format!(
+                        "<main><p>児童手当</p><aside class=\"contents-aside\">\
+                         <h2>こちらのページも読まれています</h2><ul>{list}</ul></aside></main>"
+                    ),
+                ),
+                URL,
+            )
+        };
+        let monday = at("<li>不妊治療等への助成</li>");
+        let tuesday = at("<li>子どもに対する各種助成</li>");
+        assert_eq!(monday.rule, Rule::Main);
+        assert_eq!(monday.body_text, "児童手当");
+        assert_eq!(monday.hashes.body, tuesday.hashes.body);
+    }
+
+    #[test]
+    fn an_aside_is_not_chosen_as_the_container() {
+        let body = chrome(
+            r#"<aside id="main-side"><p>注目情報</p></aside><div class="content"><p>児童手当</p></div>"#,
+        );
+        assert_eq!(rule_of(&body), (Rule::Content, "児童手当".to_string()));
+    }
+
+    #[test]
     fn rules_are_tried_in_order() {
         let (rule, text) = rule_of(&chrome("<main><p>児童手当</p></main>"));
         assert_eq!((rule, text.as_str()), (Rule::Main, "児童手当"));
@@ -458,7 +485,7 @@ mod tests {
         let (rule, text) = rule_of(&chrome("<article><p>児童手当</p></article>"));
         assert_eq!((rule, text.as_str()), (Rule::Article, "児童手当"));
 
-        // どれも無ければ body から枠（aside を含む）を除く
+        // どれも無ければ body から枠を除く（aside はどの規則でも除く）
         let (rule, text) = rule_of(&chrome("<div><p>児童手当</p></div>"));
         assert_eq!((rule, text.as_str()), (Rule::Body, "児童手当"));
     }
