@@ -53,7 +53,7 @@ cargo run -p pipeline -- fetch https://www.city.koganei.lg.jp/kenkofukuhsi/431/k
 
 転送の各段・status・文字コードの判定元・`ETag` を表示する。`--etag` / `--last-modified` を渡すと条件付きで取得する。
 HTML なら本文を取り出し、本文コンテナを決めた規則・タイトル・ページに書かれた更新日・`rel=canonical`・リンク数と、
-5種のハッシュ（`raw_hash` / `page_hash` / `title_hash` / `body_hash` / `links_hash`）も表示する。
+5種のハッシュ（`raw_hash` / `page_hash` / `title_hash` / `body_hash` / `links_hash`）も表示する。`--body` を付けると取り出した本文も表示する（日をまたいだ揺れを見比べるため）。
 同じ URL を2回渡すと、`body_hash` が再取得で変わらないかを確かめられる。
 代表 URL（`canonical_url`）とその根拠（恒久転送の先・検証を通った `rel=canonical`・取りに行った URL）、
 採らなかった転送や canonical の理由も表示する（DB を使わないので、ホスト単位の canonical の判定は当てない）。
@@ -67,7 +67,7 @@ cargo run --release -p pipeline -- crawl --kind sweep
 
 同時16件・同一ホストは1件ずつ2秒間隔で、robots.txt を守る。実行は `crawl_runs` に `--kind`（既定 `manual`）で残り、
 正常に終えたときだけ `finished_at` が入る。取得の履歴は `fetch_history` に URL ごとに1行（応答の status・Content-Type・
-文字コード・資源への観測・エラーの理由）。次に取るまでの間隔は、内容が変わったら半分・変わらなければ1.5倍にし、HTML は3〜14日・PDF は14〜90日・見つからないページは3〜7日・取れない（403・robots）ページは7〜30日に収める（初めは HTML 7日・PDF 30日）。本文を最後に読んでから4週経った URL は、条件付きヘッダ（ETag・Last-Modified）を付けずに取る。時刻が来るまでは取らないので、
+文字コード・資源への観測・エラーの理由）。次に取るまでの間隔は、内容が変わったら半分・変わらなければ1.5倍にし、HTML は3〜14日・PDF は14〜90日・見つからないページは3〜7日・取れない（403・robots）ページは7〜30日に収める（初めは HTML 7日・PDF 30日）。本文を最後に読んでから4週経った URL と、本文を一度も読んでいない URL は、条件付きヘッダ（ETag・Last-Modified）を付けずに取る。PDF の間隔は4週とほぼ同じか長いので、PDF はたいてい毎回付けずに取る（生きている PDF は少ないので受け入れる）。時刻が来るまでは取らないので、
 続けて流しても取り直さない。途中で止めたら、10分（lease の長さ）後に流し直せば続きから進む。
 
 終わりに実行サマリー（ホスト別の status・304 の割合・変更率・404 など）を出し、`crawl_runs` の `stats`・`alerts` にも残す。

@@ -108,7 +108,8 @@ pub async fn record<C: ConnectionTrait + TransactionTrait>(
 }
 
 /// 次の間隔を PDF のものにするか。本文を読んだ応答は本文の種類で決める。
-/// 本文を読まない 304 は、観測した資源の保存のされ方で決める（PDF は raw_hash だけ、HTML は body_hash も持つ）
+/// 本文を読まなかった応答（304・410・404・本文を読まない 200 など。status は問わない）は、
+/// 観測した資源の保存のされ方で決める（PDF は raw_hash だけ、HTML は body_hash も持つ）
 async fn is_pdf(
     txn: &impl ConnectionTrait,
     fetch: &Fetch,
@@ -117,9 +118,10 @@ async fn is_pdf(
     let Outcome::Response(response) = &fetch.outcome else {
         return Ok(false);
     };
-    match (&response.body, response.status, resource_id) {
-        (Body::Pdf(_), _, _) => Ok(true),
-        (Body::NotRead, 304, Some(resource_id)) => {
+    match (&response.body, resource_id) {
+        (Body::Pdf(_), _) => Ok(true),
+        (Body::Html(_), _) | (_, None) => Ok(false),
+        (_, Some(resource_id)) => {
             let resource = resources::Entity::find_by_id(resource_id)
                 .one(txn)
                 .await
@@ -128,7 +130,6 @@ async fn is_pdf(
                 resource.raw_hash.is_some() && resource.body_hash.is_none()
             }))
         }
-        _ => Ok(false),
     }
 }
 

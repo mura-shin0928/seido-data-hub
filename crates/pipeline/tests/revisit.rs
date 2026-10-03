@@ -9,10 +9,11 @@ use std::time::Duration;
 use common::*;
 use domain::change::Change;
 use domain::extract;
-use domain::schedule::Policy;
+use domain::liveness::Job;
+use domain::schedule::{self, Kind, Policy, Visit};
 use entity::{resources, urls};
 use pipeline::crawl::validators;
-use pipeline::fetch::{Fetch, Fetcher};
+use pipeline::fetch::{Body, Fetch, Fetcher, Hop, Outcome, Response};
 use pipeline::lifecycle::Context;
 use pipeline::persist::{Attempt, Recorded, record};
 use sea_orm::{ConnectionTrait, DatabaseConnection, EntityTrait, Statement, prelude::Uuid};
@@ -180,7 +181,10 @@ async fn a_restored_page_is_compared_with_its_last_alive_content() {
 
     change_of(&db, id, &get(&fetcher).await).await;
     mode.store(2, Ordering::SeqCst);
-    record_fetch(&db, id, &get(&fetcher).await).await;
+    assert_eq!(
+        change_of(&db, id, &get(&fetcher).await).await,
+        Change::Unchanged
+    );
     mode.store(0, Ordering::SeqCst);
     assert_eq!(
         change_of(&db, id, &get(&fetcher).await).await,
@@ -449,4 +453,90 @@ async fn a_url_that_never_read_a_body_is_fetched_without_validators() {
         .await
         .unwrap();
     assert_eq!(for_a.etag.as_deref(), Some("\"v1\""));
+}
+
+/// 本文を読まない応答（`Body::NotRead`）。status は問わない
+fn unread(path: &str, status: u16) -> Fetch {
+    Fetch {
+        hops: vec![Hop {
+            url: url(path),
+            status,
+            elapsed: Duration::ZERO,
+        }],
+        outcome: Outcome::Response(Response {
+            url: url(path),
+            status,
+            etag: None,
+            last_modified: None,
+            content_type: None,
+            x_robots_tag: None,
+            body: Body::NotRead,
+            bytes: 0,
+            raw_hash: None,
+        }),
+    }
+}
+
+#[tokio::test]
+async fn a_pdf_that_disappears_keeps_the_pdf_bounds() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let id = register(&db, &url("/a.pdf")).await;
+
+    change_of(&db, id, &pdf_fetch(200, b"%PDF-1.7 a")).await;
+    let policy = Policy::default();
+    assert_eq!(
+        interval_days(&db, id).await,
+        Some(policy.pdf.initial.as_secs_f64() / DAY)
+    );
+
+    let change = change_of(&db, id, &unread("/a.pdf", 410)).await;
+    // 削除候補にならない 410 は deleted。種類は PDF のまま
+    assert_eq!(only_resource(&db).await.state, "deleted");
+    let expected = schedule::next(
+        &policy,
+        Visit {
+            job: Job::Succeeded,
+            kind: Kind::Pdf,
+            change,
+        },
+        0,
+        Some(policy.pdf.initial),
+        0,
+    )
+    .interval
+    .unwrap();
+    assert!(expected > policy.page.max);
+    assert_interval(&db, id, expected.as_secs_f64() / DAY).await;
+}
+
+#[tokio::test]
+async fn a_redirected_page_with_the_same_body_is_not_a_change() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let moved = Arc::new(AtomicU8::new(0));
+    let fetcher = {
+        let moved = moved.clone();
+        serve(move |path| match path {
+            "/old.html" if moved.load(Ordering::SeqCst) == 1 => redirect(301, &url("/new.html")),
+            _ => body_page("初版"),
+        })
+        .await
+    };
+    let id = register(&db, &url("/old.html")).await;
+
+    let first = fetcher.fetch(&url("/old.html"), &Default::default()).await;
+    change_of(&db, id, &first).await;
+
+    moved.store(1, Ordering::SeqCst);
+    let second = fetcher.fetch(&url("/old.html"), &Default::default()).await;
+    assert_eq!(change_of(&db, id, &second).await, Change::Unchanged);
+
+    let resource = only_resource(&db).await;
+    assert_eq!(resource.change_count, 0);
+    assert!(resource.last_changed_at.is_none());
+    assert_eq!(resource.canonical_url, url("/new.html"));
+    assert!(!links_of(&db, id).await.is_empty());
 }

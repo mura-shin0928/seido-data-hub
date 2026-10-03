@@ -77,7 +77,9 @@ pub struct Policy {
     pub blocked: Bounds,
     /// `FailedFinal` の再評価までの間隔
     pub failed_final_interval: Duration,
-    /// 本文を最後に読んでからこれだけ経ったら、条件付きヘッダを付けずに取る
+    /// 本文を最後に読んでからこれだけ経ったら、条件付きヘッダを付けずに取る。
+    /// PDF の間隔（14〜90日）はこの判定とほぼ同じか長いので、PDF はたいてい毎回 validator を付けずに取る
+    /// （生きている PDF は少ないので受け入れる）
     pub full_fetch_every: Duration,
 }
 
