@@ -67,7 +67,7 @@ cargo run --release -p pipeline -- crawl --kind sweep
 
 同時16件・同一ホストは1件ずつ2秒間隔で、robots.txt を守る。実行は `crawl_runs` に `--kind`（既定 `manual`）で残り、
 正常に終えたときだけ `finished_at` が入る。取得の履歴は `fetch_history` に URL ごとに1行（応答の status・Content-Type・
-文字コード・資源への観測・エラーの理由）。成功した URL は次の時刻（HTML 7日・PDF 30日）まで取らないので、
+文字コード・資源への観測・エラーの理由）。次に取るまでの間隔は、内容が変わったら半分・変わらなければ1.5倍にし、HTML は3〜14日・PDF は14〜90日・見つからないページは3〜7日・取れない（403・robots）ページは7〜30日に収める（初めは HTML 7日・PDF 30日）。時刻が来るまでは取らないので、
 続けて流しても取り直さない。途中で止めたら、10分（lease の長さ）後に流し直せば続きから進む。
 
 終わりに実行サマリー（ホスト別の status・304 の割合・変更率・404 など）を出し、`crawl_runs` の `stats`・`alerts` にも残す。

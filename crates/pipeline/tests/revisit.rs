@@ -9,11 +9,11 @@ use common::*;
 use domain::change::Change;
 use domain::extract;
 use domain::schedule::Policy;
-use entity::resources;
+use entity::{resources, urls};
 use pipeline::fetch::{Fetch, Fetcher};
 use pipeline::lifecycle::Context;
 use pipeline::persist::{Attempt, Recorded, record};
-use sea_orm::{ConnectionTrait, DatabaseConnection, Statement, prelude::Uuid};
+use sea_orm::{ConnectionTrait, DatabaseConnection, EntityTrait, Statement, prelude::Uuid};
 
 async fn record_fetch(db: &DatabaseConnection, url_id: Uuid, fetch: &Fetch) -> Recorded {
     let run_id = start_run(db).await;
@@ -215,4 +215,145 @@ async fn a_pdf_is_compared_by_its_raw_hash() {
         Change::Changed
     );
     assert_eq!(only_resource(&db).await.change_count, 1);
+}
+
+const DAY: f64 = 86_400.0;
+
+/// `urls.recrawl_interval_secs` を日で返す
+async fn interval_days(db: &DatabaseConnection, id: Uuid) -> Option<f64> {
+    let row = db
+        .query_one_raw(Statement::from_sql_and_values(
+            db.get_database_backend(),
+            "SELECT recrawl_interval_secs FROM urls WHERE id = $1",
+            [id.into()],
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    row.try_get::<Option<i32>>("", "recrawl_interval_secs")
+        .unwrap()
+        .map(|secs| f64::from(secs) / DAY)
+}
+
+/// 間隔が `days` 日で、次の時刻も同じだけ先（±60秒）
+async fn assert_interval(db: &DatabaseConnection, id: Uuid, days: f64) {
+    assert_eq!(interval_days(db, id).await, Some(days));
+    let until = seconds_until_next(db, id).await as f64;
+    assert!((until - days * DAY).abs() <= 60.0, "{until} 秒先");
+}
+
+async fn status_of(db: &DatabaseConnection, id: Uuid) -> String {
+    urls::Entity::find_by_id(id)
+        .one(db)
+        .await
+        .unwrap()
+        .unwrap()
+        .status
+}
+
+#[tokio::test]
+async fn an_unchanged_page_is_revisited_less_often() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let fetcher = serve(|_| body_page("本文")).await;
+    let id = register(&db, &url("/a.html")).await;
+
+    for days in [7.0, 10.5, 14.0] {
+        record_fetch(&db, id, &get(&fetcher).await).await;
+        assert_interval(&db, id, days).await;
+    }
+}
+
+#[tokio::test]
+async fn a_changed_page_is_revisited_sooner() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let (mode, fetcher) = switchable();
+    let fetcher = fetcher.await;
+    let id = register(&db, &url("/a.html")).await;
+
+    record_fetch(&db, id, &get(&fetcher).await).await;
+    assert_interval(&db, id, 7.0).await;
+    mode.store(1, Ordering::SeqCst);
+    record_fetch(&db, id, &get(&fetcher).await).await;
+    assert_interval(&db, id, 3.5).await;
+}
+
+#[tokio::test]
+async fn a_retry_keeps_the_interval_and_the_next_success_adapts_from_it() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let failing = Arc::new(AtomicU8::new(0));
+    let fetcher = {
+        let failing = failing.clone();
+        serve(move |_| {
+            if failing.load(Ordering::SeqCst) == 1 {
+                reply(503).body(Default::default()).unwrap()
+            } else {
+                body_page("本文")
+            }
+        })
+        .await
+    };
+    let id = register(&db, &url("/a.html")).await;
+
+    record_fetch(&db, id, &get(&fetcher).await).await;
+    assert_interval(&db, id, 7.0).await;
+
+    failing.store(1, Ordering::SeqCst);
+    record_fetch(&db, id, &get(&fetcher).await).await;
+    assert_eq!(status_of(&db, id).await, "retry_wait");
+    assert_eq!(interval_days(&db, id).await, Some(7.0));
+    assert!((seconds_until_next(&db, id).await - 10).abs() <= 6);
+
+    failing.store(0, Ordering::SeqCst);
+    record_fetch(&db, id, &get(&fetcher).await).await;
+    assert_interval(&db, id, 10.5).await;
+}
+
+#[tokio::test]
+async fn a_not_found_page_switches_to_the_deletion_interval_and_back() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let (mode, fetcher) = switchable();
+    let fetcher = fetcher.await;
+    let id = register(&db, &url("/a.html")).await;
+
+    record_fetch(&db, id, &get(&fetcher).await).await;
+    db.execute_raw(Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "UPDATE urls SET recrawl_interval_secs = $1 WHERE id = $2",
+        [(14 * 86_400).into(), id.into()],
+    ))
+    .await
+    .unwrap();
+
+    mode.store(2, Ordering::SeqCst);
+    record_fetch(&db, id, &get(&fetcher).await).await;
+    assert_eq!(only_resource(&db).await.state, "deletion_candidate");
+    assert_interval(&db, id, 7.0).await;
+
+    mode.store(0, Ordering::SeqCst);
+    record_fetch(&db, id, &get(&fetcher).await).await;
+    assert_eq!(only_resource(&db).await.state, "active");
+    assert_interval(&db, id, 10.5).await;
+}
+
+#[tokio::test]
+async fn a_blocked_url_waits_longer_each_time() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let fetcher = serve(|_| reply(403).body(Default::default()).unwrap()).await;
+    let id = register(&db, &url("/a.html")).await;
+
+    for days in [7.0, 10.5] {
+        record_fetch(&db, id, &get(&fetcher).await).await;
+        assert_eq!(status_of(&db, id).await, "blocked");
+        assert_interval(&db, id, days).await;
+    }
 }

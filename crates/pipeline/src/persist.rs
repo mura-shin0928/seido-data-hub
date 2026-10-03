@@ -6,11 +6,13 @@
 //! 内容を書くときは前回の内容と比べ（`domain::change`）、変わったときだけ資源の `last_changed_at` と `change_count` を進める。
 //! 比べた結果は呼び出し側へ返す。
 
+use std::time::Duration;
+
 use anyhow::Context as _;
 use domain::change::{self, Change};
 use domain::extract::{self, Extracted};
 use domain::liveness::Observation;
-use domain::schedule::{self, Policy};
+use domain::schedule::{self, Policy, Visit};
 use entity::{content_versions, fetch_history, resources, urls};
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{
@@ -87,12 +89,13 @@ pub async fn record<C: ConnectionTrait + TransactionTrait>(
         _ => Change::Unknown,
     };
     let pdf = is_pdf(&txn, attempt.fetch, processed.resource_id).await?;
+    let job = processed.verdict.job;
+    let kind = schedule::kind(job, processed.transition.as_ref().map(|t| t.state), pdf);
     complete_job(
         &txn,
         &url,
-        processed.verdict.job,
+        Visit { job, kind, change },
         processed.verdict.error_type,
-        pdf,
         attempt.policy,
     )
     .await?;
@@ -368,16 +371,22 @@ async fn save_resource(
 
 /// ジョブを完了にし、次の状態と次に取る時刻を書く。回数と時刻は取得の記録と同じトランザクションで動かす。
 /// 状態・回数・間隔は `schedule::next` が決める（再試行の上限を超えたら `failed_final`）。
+/// 前回の再訪の間隔（`recrawl_interval_secs`）を渡し、伸び縮みした値を同じ UPDATE で書く（失敗では変わらない）。
 /// 時刻は DB の時計（`now()`）からの間隔で書く
 async fn complete_job(
     txn: &impl ConnectionTrait,
     url: &urls::Model,
-    job: domain::liveness::Job,
+    visit: Visit,
     error_type: Option<&str>,
-    pdf: bool,
     policy: &Policy,
 ) -> anyhow::Result<()> {
-    let next = schedule::next(policy, job, url.retry_count, pdf, url.id.as_u128());
+    let previous = url
+        .recrawl_interval_secs
+        .map(|secs| Duration::from_secs(secs as u64));
+    let next = schedule::next(policy, visit, url.retry_count, previous, url.id.as_u128());
+    let interval_secs = next
+        .interval
+        .map(|d| i32::try_from(d.as_secs()).unwrap_or(i32::MAX));
     let (status, retry_count) = (next.status.as_str(), next.retry_count);
     urls::Entity::update_many()
         .col_expr(urls::Column::Status, Expr::value(status))
@@ -396,6 +405,10 @@ async fn complete_job(
                 "now() + make_interval(secs => $1)",
                 [next.after.as_secs_f64()],
             ),
+        )
+        .col_expr(
+            urls::Column::RecrawlIntervalSecs,
+            Expr::value(interval_secs),
         )
         .col_expr(urls::Column::LastCrawledAt, Expr::current_timestamp())
         .col_expr(urls::Column::WorkerId, Expr::value(Option::<String>::None))

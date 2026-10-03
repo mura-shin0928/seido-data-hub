@@ -655,7 +655,7 @@ async fn a_pdf_waits_thirty_days_and_blocked_waits_a_week() {
 }
 
 #[tokio::test]
-async fn a_304_for_a_pdf_waits_thirty_days() {
+async fn a_304_for_a_pdf_stretches_the_pdf_interval() {
     let Some((db, _guard)) = fresh_db().await else {
         return;
     };
@@ -668,18 +668,18 @@ async fn a_304_for_a_pdf_waits_thirty_days() {
         &pdf_fetch(200, b"%PDF-1.7"),
     )
     .await;
-    // 本文を読まない 304 でも、保存した資源が PDF なら PDF の間隔
+    // 本文を読まない 304 でも、保存した資源が PDF なら PDF の間隔。変わっていないので 30日 × 1.5
     record_fetch(&db, start_run(&db).await, pdf, 0, &not_modified("/a.pdf")).await;
     assert_eq!(url_row(&db, pdf).await.status, "succeeded");
-    assert!((seconds_until_next(&db, pdf).await - 30 * DAY).abs() <= 60);
+    assert!((seconds_until_next(&db, pdf).await - 45 * DAY).abs() <= 60);
 
-    // HTML の 304 は HTML の間隔のまま
+    // HTML の 304 は HTML の間隔（7日 × 1.5）
     let fetcher = serve(|_| titled("制度")).await;
     let page = register(&db, &url("/b.html")).await;
     let fetch = get(&fetcher, "/b.html").await;
     record_fetch(&db, start_run(&db).await, page, 0, &fetch).await;
     record_fetch(&db, start_run(&db).await, page, 0, &not_modified("/b.html")).await;
-    assert!((seconds_until_next(&db, page).await - 7 * DAY).abs() <= 60);
+    assert!((seconds_until_next(&db, page).await - 21 * DAY / 2).abs() <= 60);
 }
 
 /// `path` を取得して記録し、その URL の履歴の1行を返す
