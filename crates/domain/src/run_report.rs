@@ -271,7 +271,14 @@ pub fn alerts(
 
     let total = current.totals();
     let fetched = total.fetched();
-    if fetched >= 1 && total.responses() == 0 {
+    // 全件失敗は通信まわり（robots の取得不能とネットワークエラー）だけで応答が0のときに限る。
+    // 範囲外・robots 拒否・リダイレクト異常はサーバー側の結果で、通信の障害ではない
+    let only_network_failures = current
+        .hosts
+        .values()
+        .flat_map(|h| h.stopped.keys())
+        .all(|key| key == "robots_unavailable" || key.starts_with("network:"));
+    if fetched >= 1 && total.responses() == 0 && only_network_failures {
         out.push(Alert::AllFailed { fetched });
     }
 
@@ -573,6 +580,18 @@ mod tests {
         );
         assert!(alerts(&RunStats::default(), None, &t).is_empty());
         assert!(alerts(&stats(vec![(CITY, host(&[(403, 1)]))]), None, &t).is_empty());
+    }
+
+    #[test]
+    fn server_side_stops_alone_do_not_flag_an_outage() {
+        let t = Thresholds::default();
+        let mut h = HostStats::default();
+        h.stopped.insert("out_of_scope".into(), 2);
+        assert!(alerts(&stats(vec![(CITY, h)]), None, &t).is_empty());
+        let mut h = HostStats::default();
+        h.stopped.insert("out_of_scope".into(), 1);
+        h.stopped.insert("network:dns".into(), 1);
+        assert!(alerts(&stats(vec![(CITY, h)]), None, &t).is_empty());
     }
 
     #[test]

@@ -226,12 +226,14 @@ struct IdRow {
     id: Uuid,
 }
 
-/// `run_id` より前に始まり `finished_at` のある直近の実行（種類は問わない）
+/// `run_id` より前に始まり、`finished_at` があり、取得の履歴を1行以上持つ直近の実行（種類は問わない）。
+/// 何も取得しなかった実行を比べる相手にすると、全ホストが前回いなかった扱いになり急増の警告が誤って立つ
 pub async fn previous_run(db: &impl ConnectionTrait, run_id: Uuid) -> anyhow::Result<Option<Uuid>> {
     let row = IdRow::find_by_statement(Statement::from_sql_and_values(
         DbBackend::Postgres,
         "select p.id from crawl_runs p join crawl_runs c on c.id = $1 \
           where p.id <> c.id and p.started_at < c.started_at and p.finished_at is not null \
+             and exists (select 1 from fetch_history f where f.run_id = p.id) \
           order by p.started_at desc limit 1",
         [run_id.into()],
     ))

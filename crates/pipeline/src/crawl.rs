@@ -279,10 +279,18 @@ pub async fn run_recorded(
         retries: summary.retries as u64,
         lease_expired: summary.lease_expired as u64,
     };
-    let stats = run_report::collect(db, run_id, Some(counters)).await?;
-    let alerts = run_report::alerts_for(db, run_id, &stats).await?;
-    run_report::close(db, run_id, &stats, &alerts).await?;
-    let report = run_report::load(db, Some(run_id)).await?;
+    let stats = run_report::collect(db, run_id, Some(counters))
+        .await
+        .with_context(|| format!("実行 {run_id} の集計を数えられない"))?;
+    let alerts = run_report::alerts_for(db, run_id, &stats)
+        .await
+        .with_context(|| format!("実行 {run_id} の警告を判定できない"))?;
+    run_report::close(db, run_id, &stats, &alerts)
+        .await
+        .with_context(|| format!("実行 {run_id} を締められない"))?;
+    let report = run_report::load(db, Some(run_id))
+        .await
+        .with_context(|| format!("実行 {run_id} の報告を読めない"))?;
     Ok((run_id, summary, report))
 }
 

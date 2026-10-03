@@ -200,10 +200,13 @@ async fn the_previous_run_is_the_latest_finished_one_before_this() {
     let Some((db, _guard)) = fresh_db().await else {
         return;
     };
+    let urls = [register(&db, &url("/p.html")).await];
     let a = start_run(&db).await;
     let b = start_run(&db).await;
     let c = start_run(&db).await;
-    for (id, ago, finished) in [(a, 30, true), (b, 20, false), (c, 10, false)] {
+    let d = start_run(&db).await;
+    // a: 取得あり・終了、b: 未終了、c: 終了だが取得なし（比べる相手にしない）、d: 今回
+    for (id, ago, finished) in [(a, 40, true), (b, 30, false), (c, 20, true), (d, 10, false)] {
         exec(
             &db,
             "update crawl_runs set started_at = now() - make_interval(secs => $1), \
@@ -212,9 +215,27 @@ async fn the_previous_run_is_the_latest_finished_one_before_this() {
         )
         .await;
     }
+    insert_responses(&db, a, &urls, 0).await;
+    insert_responses(&db, b, &urls, 0).await;
 
-    assert_eq!(run_report::previous_run(&db, c).await.unwrap(), Some(a));
+    // b は未終了、c は取得が無いので、a が前回
+    assert_eq!(run_report::previous_run(&db, d).await.unwrap(), Some(a));
+    // 後に始まった実行は、終わって取得があっても前回にならない
+    exec(
+        &db,
+        "update crawl_runs set finished_at = now() where id = $1",
+        vec![b.into()],
+    )
+    .await;
+    insert_responses(&db, d, &urls, 0).await;
+    exec(
+        &db,
+        "update crawl_runs set finished_at = now() where id = $1",
+        vec![d.into()],
+    )
+    .await;
     assert_eq!(run_report::previous_run(&db, a).await.unwrap(), None);
+    assert_eq!(run_report::previous_run(&db, d).await.unwrap(), Some(b));
 }
 
 #[tokio::test]
