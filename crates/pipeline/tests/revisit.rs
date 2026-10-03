@@ -4,12 +4,14 @@ mod common;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::time::Duration;
 
 use common::*;
 use domain::change::Change;
 use domain::extract;
 use domain::schedule::Policy;
 use entity::{resources, urls};
+use pipeline::crawl::validators;
 use pipeline::fetch::{Fetch, Fetcher};
 use pipeline::lifecycle::Context;
 use pipeline::persist::{Attempt, Recorded, record};
@@ -356,4 +358,95 @@ async fn a_blocked_url_waits_longer_each_time() {
         assert_eq!(status_of(&db, id).await, "blocked");
         assert_interval(&db, id, days).await;
     }
+}
+
+fn days(n: u64) -> Duration {
+    Duration::from_secs(n * 86_400)
+}
+
+/// ETag "v1" 付きの HTML を返すサーバー
+async fn etagged() -> Fetcher {
+    serve(|_| {
+        let mut response = body_page("本文");
+        response
+            .headers_mut()
+            .insert("etag", "\"v1\"".parse().unwrap());
+        response
+    })
+    .await
+}
+
+async fn age_history(db: &DatabaseConnection, url_id: Uuid, days: i32) {
+    db.execute_raw(Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "UPDATE fetch_history SET fetched_at = now() - make_interval(days => $2) WHERE url_id = $1",
+        [url_id.into(), days.into()],
+    ))
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn validators_are_dropped_once_the_last_full_read_is_four_weeks_old() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let fetcher = etagged().await;
+    let id = register(&db, &url("/a.html")).await;
+
+    change_of(&db, id, &get(&fetcher).await).await;
+    let resource_id = only_resource(&db).await.id;
+    let found = validators(&db, id, Some(resource_id), days(28))
+        .await
+        .unwrap();
+    assert_eq!(found.etag.as_deref(), Some("\"v1\""));
+
+    age_history(&db, id, 29).await;
+    let found = validators(&db, id, Some(resource_id), days(28))
+        .await
+        .unwrap();
+    assert!(found.etag.is_none() && found.last_modified.is_none());
+
+    // 本文を読まない 304 は「最後に読んだ時刻」を新しくしない
+    change_of(&db, id, &not_modified("/a.html")).await;
+    let found = validators(&db, id, Some(resource_id), days(28))
+        .await
+        .unwrap();
+    assert!(found.etag.is_none() && found.last_modified.is_none());
+
+    // 本文を読んだら、また validator を送る
+    change_of(&db, id, &get(&fetcher).await).await;
+    let found = validators(&db, id, Some(resource_id), days(28))
+        .await
+        .unwrap();
+    assert_eq!(found.etag.as_deref(), Some("\"v1\""));
+}
+
+#[tokio::test]
+async fn a_url_that_never_read_a_body_is_fetched_without_validators() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let fetcher = etagged().await;
+    let a = register(&db, &url("/a.html")).await;
+    let b = register(&db, &url("/b.html")).await;
+
+    change_of(&db, a, &get(&fetcher).await).await;
+    let resource_id = links_of(&db, a).await.first().unwrap().resource_id;
+    db.execute_raw(Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "INSERT INTO url_resources (url_id, resource_id, relation) VALUES ($1, $2, 'content_match')",
+        [b.into(), resource_id.into()],
+    ))
+    .await
+    .unwrap();
+
+    let for_b = validators(&db, b, Some(resource_id), days(28))
+        .await
+        .unwrap();
+    assert!(for_b.etag.is_none() && for_b.last_modified.is_none());
+    let for_a = validators(&db, a, Some(resource_id), days(28))
+        .await
+        .unwrap();
+    assert_eq!(for_a.etag.as_deref(), Some("\"v1\""));
 }

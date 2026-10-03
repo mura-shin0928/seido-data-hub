@@ -77,6 +77,8 @@ pub struct Policy {
     pub blocked: Bounds,
     /// `FailedFinal` の再評価までの間隔
     pub failed_final_interval: Duration,
+    /// 本文を最後に読んでからこれだけ経ったら、条件付きヘッダを付けずに取る
+    pub full_fetch_every: Duration,
 }
 
 impl Default for Policy {
@@ -91,6 +93,7 @@ impl Default for Policy {
             deletion_candidate: Bounds::days(7, 3, 7),
             blocked: Bounds::days(7, 7, 30),
             failed_final_interval: 7 * DAY,
+            full_fetch_every: 28 * DAY,
         }
     }
 }
