@@ -230,3 +230,38 @@ pub async fn set_status(db: &DatabaseConnection, id: Uuid, status: &str, next_cr
     .await
     .unwrap();
 }
+
+/// `next_crawl_at - now()` を秒で返す
+pub async fn seconds_until_next(db: &DatabaseConnection, id: Uuid) -> i64 {
+    let row = db
+        .query_one_raw(Statement::from_sql_and_values(
+            db.get_database_backend(),
+            "SELECT extract(epoch from next_crawl_at - now())::float8 AS secs FROM urls WHERE id = $1",
+            [id.into()],
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    row.try_get::<f64>("", "secs").unwrap().round() as i64
+}
+
+pub fn pdf_fetch(status: u16, bytes: &[u8]) -> Fetch {
+    Fetch {
+        hops: vec![Hop {
+            url: url("/a.pdf"),
+            status,
+            elapsed: Duration::ZERO,
+        }],
+        outcome: Outcome::Response(Response {
+            url: url("/a.pdf"),
+            status,
+            etag: None,
+            last_modified: None,
+            content_type: Some("application/pdf".to_string()),
+            x_robots_tag: None,
+            body: Body::Pdf(bytes.to_vec()),
+            bytes: bytes.len() as u64,
+            raw_hash: Some(domain::extract::digest(bytes)),
+        }),
+    }
+}

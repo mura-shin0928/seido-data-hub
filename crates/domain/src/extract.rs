@@ -1,7 +1,7 @@
 //! 取得した HTML から本文を取り出し、変化を比べるためのハッシュを作る（§16 §19 §20）。
 //!
 //! ```text
-//! HTML → 本文コンテナの抽出 → script/style/nav/header/footer/コメント除去
+//! HTML → 本文コンテナの抽出 → script/style/nav/header/footer/aside/localnavi/コメント除去
 //!      → 空白・Unicode（NFKC）正規化 → ハッシュ
 //! ```
 
@@ -19,14 +19,22 @@ use url::Url;
 use crate::urls;
 
 /// 抽出の規則・除去する要素・正規化のどれかを変えたら上げる。
-/// 規則の変更とサイトの変更を区別するため、ハッシュと一緒に残す
-pub const EXTRACTOR_VERSION: i32 = 1;
+/// 規則の変更とサイトの変更を区別するため、ハッシュと一緒に残す。
+///
+/// - 2: 本文コンテナの中の aside も除く（閲覧の多いページの一覧が日ごとに変わるため）
+/// - 3: id/class に localnavi を含む要素（サブナビゲーション）も除く
+pub const EXTRACTOR_VERSION: i32 = 3;
 
 /// 画面に出ない要素。本文からもページ全体からも除く
 const HIDDEN: [&str; 4] = ["script", "style", "noscript", "template"];
 
 /// 本文から除く、ページの枠の要素（§16）
-const CHROME: [&str; 3] = ["nav", "header", "footer"];
+const CHROME: [&str; 4] = ["nav", "header", "footer", "aside"];
+
+/// id か class にこの語を含む要素も `CHROME` と同じく除く（大文字小文字は区別しない）。
+/// `localnavi` はページ内のサブナビゲーション。閲覧の多いページ・類似ページの一覧が日ごとに変わる
+/// （中野区・墨田区で実測）
+const CHROME_MARKS: [&str; 1] = ["localnavi"];
 
 /// 前後で行を分ける要素。インライン要素（`<b>` など）では分けない（「子<b>育</b>て」を割らないため）
 const BLOCKS: [&str; 39] = [
@@ -80,7 +88,7 @@ pub enum Rule {
     Content,
     Honbun,
     Article,
-    /// どれにも当たらないときの最後の手段。`<body>` から aside も除く
+    /// どれにも当たらないときの最後の手段。`<body>` から枠を除く
     Body,
 }
 
@@ -173,15 +181,10 @@ pub fn extract(html: &str, url: &str) -> Extracted {
     let base = base_url(root, url);
 
     let (rule, container) = container(body);
-    let chrome: &[&str] = if rule == Rule::Body {
-        &["nav", "header", "footer", "aside"]
-    } else {
-        &CHROME
-    };
     let mut links = BTreeSet::new();
     let body_text = normalize(&text(
         container,
-        &|e| is(e, &HIDDEN) || is(e, chrome),
+        &|e| is(e, &HIDDEN) || is_chrome(e),
         &mut |a| {
             if let Some(link) = resolve_link(a, base.as_ref()) {
                 links.insert(link);
@@ -232,12 +235,23 @@ fn container(body: ElementRef<'_>) -> (Rule, ElementRef<'_>) {
 
 fn collect<'a>(parent: ElementRef<'a>, out: &mut Vec<ElementRef<'a>>) {
     for child in parent.children().filter_map(ElementRef::wrap) {
-        if is(child.value(), &HIDDEN) || is(child.value(), &CHROME) {
+        if is(child.value(), &HIDDEN) || is_chrome(child.value()) {
             continue;
         }
         out.push(child);
         collect(child, out);
     }
+}
+
+/// 本文から除く枠の要素か（`CHROME` の要素、または id/class に `CHROME_MARKS` の語を含む要素）
+fn is_chrome(element: &Element) -> bool {
+    is(element, &CHROME)
+        || ["id", "class"].into_iter().any(|attr| {
+            element.attr(attr).is_some_and(|value| {
+                let value = value.to_ascii_lowercase();
+                CHROME_MARKS.iter().any(|mark| value.contains(mark))
+            })
+        })
 }
 
 fn is(element: &Element, names: &[&str]) -> bool {
@@ -437,6 +451,36 @@ mod tests {
     }
 
     #[test]
+    fn asides_inside_the_container_are_removed() {
+        // 墨田区の形: main の中に、閲覧の多いページの一覧（日ごとに変わる）
+        let at = |list: &str| {
+            extract(
+                &page(
+                    "",
+                    &format!(
+                        "<main><p>児童手当</p><aside class=\"contents-aside\">\
+                         <h2>こちらのページも読まれています</h2><ul>{list}</ul></aside></main>"
+                    ),
+                ),
+                URL,
+            )
+        };
+        let monday = at("<li>不妊治療等への助成</li>");
+        let tuesday = at("<li>子どもに対する各種助成</li>");
+        assert_eq!(monday.rule, Rule::Main);
+        assert_eq!(monday.body_text, "児童手当");
+        assert_eq!(monday.hashes.body, tuesday.hashes.body);
+    }
+
+    #[test]
+    fn an_aside_is_not_chosen_as_the_container() {
+        let body = chrome(
+            r#"<aside id="main-side"><p>注目情報</p></aside><div class="content"><p>児童手当</p></div>"#,
+        );
+        assert_eq!(rule_of(&body), (Rule::Content, "児童手当".to_string()));
+    }
+
+    #[test]
     fn rules_are_tried_in_order() {
         let (rule, text) = rule_of(&chrome("<main><p>児童手当</p></main>"));
         assert_eq!((rule, text.as_str()), (Rule::Main, "児童手当"));
@@ -458,7 +502,7 @@ mod tests {
         let (rule, text) = rule_of(&chrome("<article><p>児童手当</p></article>"));
         assert_eq!((rule, text.as_str()), (Rule::Article, "児童手当"));
 
-        // どれも無ければ body から枠（aside を含む）を除く
+        // どれも無ければ body から枠を除く（aside はどの規則でも除く）
         let (rule, text) = rule_of(&chrome("<div><p>児童手当</p></div>"));
         assert_eq!((rule, text.as_str()), (Rule::Body, "児童手当"));
     }
@@ -705,5 +749,40 @@ mod tests {
             digest(b""),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
+    }
+
+    #[test]
+    fn local_navigation_inside_the_container_is_removed() {
+        // 中野区の形: main の中の div#localnavi に、日ごとに変わる「類似ページ」
+        let at = |list: &str| {
+            extract(
+                &page(
+                    "",
+                    &format!(
+                        "<main><div class=\"wrap\"><p>児童手当</p>\
+                         <div id=\"localnavi\"><div class=\"loruiji lobgbox\"><h2>類似ページ</h2>\
+                         <ul>{list}</ul></div></div></div></main>"
+                    ),
+                ),
+                URL,
+            )
+        };
+        let monday = at("<li><a href=\"/a.html\">ひとり親家庭の方への支援</a></li>");
+        let tuesday = at("<li><a href=\"/b.html\">創業支援等事業のご案内</a></li>");
+        assert_eq!(monday.rule, Rule::Main);
+        assert_eq!(monday.body_text, "児童手当");
+        assert_eq!(monday.hashes.body, tuesday.hashes.body);
+        // 一覧のリンクは本文のリンクにも入れない
+        assert!(monday.links.is_empty());
+        assert_eq!(monday.hashes.links, tuesday.hashes.links);
+    }
+
+    #[test]
+    fn local_navigation_is_not_chosen_as_the_container() {
+        // class に content を含んでも、サブナビゲーションは本文コンテナにしない
+        let body = chrome(
+            r#"<div class="LocalNavi content-side"><p>類似ページ</p></div><div id="honbun"><p>児童手当</p></div>"#,
+        );
+        assert_eq!(rule_of(&body), (Rule::Honbun, "児童手当".to_string()));
     }
 }

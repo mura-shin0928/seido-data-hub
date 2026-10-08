@@ -42,6 +42,9 @@ enum Command {
         /// 前回の Last-Modified（条件付き取得を試す）
         #[arg(long)]
         last_modified: Option<String>,
+        /// 取り出した本文も表示する（日をまたいだ揺れを見比べるため）
+        #[arg(long)]
+        body: bool,
     },
     /// 時刻の来た URL を取得して記録する（DATABASE_URL を使う）。同時16件・同一ホスト1件・2秒間隔で robots.txt を守る。
     /// 途中で止めたら、10分（lease）後に流し直せば続きから進む。
@@ -109,6 +112,7 @@ async fn main() -> anyhow::Result<()> {
             urls,
             etag,
             last_modified,
+            body,
         } => {
             let allowed: BTreeSet<String> = urls
                 .iter()
@@ -121,7 +125,7 @@ async fn main() -> anyhow::Result<()> {
                 last_modified,
             };
             for url in &urls {
-                print_fetch(url, &fetcher.fetch(url, &validators).await);
+                print_fetch(url, &fetcher.fetch(url, &validators).await, body);
             }
         }
         Command::Crawl { kind } => {
@@ -203,7 +207,7 @@ fn print_decision(decision: &Decision) {
     }
 }
 
-fn print_fetch(url: &str, fetch: &pipeline::fetch::Fetch) {
+fn print_fetch(url: &str, fetch: &pipeline::fetch::Fetch, show_body: bool) {
     println!("{url}");
     for hop in &fetch.hops {
         println!(
@@ -247,6 +251,9 @@ fn print_fetch(url: &str, fetch: &pipeline::fetch::Fetch) {
             }
             if let Some(extracted) = &extracted {
                 print_extracted(extracted);
+                if show_body {
+                    println!("{}", extracted.body_text);
+                }
             }
             if let Some(tag) = &response.x_robots_tag {
                 println!("    X-Robots-Tag {tag:?}");

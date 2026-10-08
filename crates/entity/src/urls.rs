@@ -31,6 +31,7 @@ pub struct Model {
     pub claim_token: i64,
     #[sea_orm(column_type = "Text", nullable)]
     pub last_error_type: Option<String>,
+    pub recrawl_interval_secs: Option<i32>,
     pub created_at: DateTimeWithTimeZone,
     pub updated_at: DateTimeWithTimeZone,
 }

@@ -303,7 +303,13 @@ async fn attempt(
     host_trusted: bool,
     policy: Policy,
 ) -> anyhow::Result<Done> {
-    let validators = validators(&db, claim.resource_id).await?;
+    let validators = validators(
+        &db,
+        claim.url_id,
+        claim.resource_id,
+        policy.full_fetch_every,
+    )
+    .await?;
     let fetch = fetcher.fetch(&claim.url, &validators).await;
     let extracted = extract_of(&fetch);
     let ctx = Context {
@@ -350,14 +356,34 @@ pub async fn allowed_hosts(db: &impl ConnectionTrait) -> anyhow::Result<BTreeSet
     Ok(hosts)
 }
 
-/// いまの資源に保存した ETag・Last-Modified。資源が無ければ空
+/// いまの資源に保存した ETag・Last-Modified。資源が無ければ空。
+/// ETag が嘘のサイトでも変化を見落とさないよう、この URL が本文を最後に読んでから
+/// `full_fetch_every` 経っていたら（一度も読んでいなくても）validator を送らない
 pub async fn validators(
     db: &impl ConnectionTrait,
+    url_id: Uuid,
     resource_id: Option<Uuid>,
+    full_fetch_every: Duration,
 ) -> anyhow::Result<Validators> {
     let Some(resource_id) = resource_id else {
         return Ok(Validators::default());
     };
+    let recent = db
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT coalesce(max(fetched_at) > now() - make_interval(secs => $2), false) AS recent \
+             FROM fetch_history WHERE url_id = $1 AND raw_hash IS NOT NULL",
+            [url_id.into(), full_fetch_every.as_secs_f64().into()],
+        ))
+        .await
+        .context("本文を最後に読んだ時刻を読めない")?
+        .map(|row| row.try_get::<bool>("", "recent"))
+        .transpose()
+        .context("本文を最後に読んだ時刻を読めない")?
+        .unwrap_or(false);
+    if !recent {
+        return Ok(Validators::default());
+    }
     let resource = resources::Entity::find()
         .filter(resources::Column::Id.eq(resource_id))
         .one(db)

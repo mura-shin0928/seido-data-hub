@@ -122,13 +122,17 @@ async fn validators_come_from_the_current_resource() {
     .unwrap();
 
     let resource_id = all_resources(&db).await[0].id;
-    let found = validators(&db, Some(resource_id)).await.unwrap();
+    let found = validators(&db, id, Some(resource_id), Duration::from_secs(28 * 86_400))
+        .await
+        .unwrap();
     assert_eq!(found.etag.as_deref(), Some("\"v1\""));
     assert_eq!(
         found.last_modified.as_deref(),
         Some("Mon, 01 Jan 2026 00:00:00 GMT")
     );
-    let none = validators(&db, None).await.unwrap();
+    let none = validators(&db, id, None, Duration::from_secs(28 * 86_400))
+        .await
+        .unwrap();
     assert!(none.etag.is_none() && none.last_modified.is_none());
 }
 
