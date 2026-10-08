@@ -22,7 +22,7 @@ use sea_orm::{
 const LEASE: Duration = Duration::from_secs(60);
 
 async fn candidate_ids(db: &DatabaseConnection, exclude: &Exclude) -> BTreeSet<Uuid> {
-    claim::candidates(db, exclude)
+    claim::candidates(db, exclude, Duration::ZERO)
         .await
         .unwrap()
         .into_iter()
@@ -84,7 +84,9 @@ async fn the_highest_priority_url_of_a_host_comes_first() {
     set_priority(&db, high, 90).await;
     set_priority(&db, middle, 80).await;
 
-    let candidates = claim::candidates(&db, &Exclude::default()).await.unwrap();
+    let candidates = claim::candidates(&db, &Exclude::default(), Duration::ZERO)
+        .await
+        .unwrap();
     assert_eq!(candidates.len(), 1);
     assert_eq!(candidates[0].url_id, high);
     assert_eq!(candidates[0].priority, 90);
@@ -99,10 +101,12 @@ async fn a_host_with_a_live_lease_has_no_candidate() {
     let a = register(&db, &url("/a.html")).await;
     register(&db, &url("/b.html")).await;
 
-    let claims = claim::claim(&db, &[a], "worker-1", LEASE).await.unwrap();
+    let claims = claim::claim(&db, &[a], "worker-1", LEASE, Duration::ZERO)
+        .await
+        .unwrap();
     assert_eq!(claims.len(), 1);
     assert!(
-        claim::candidates(&db, &Exclude::default())
+        claim::candidates(&db, &Exclude::default(), Duration::ZERO)
             .await
             .unwrap()
             .is_empty()
@@ -139,7 +143,9 @@ async fn an_expired_lease_is_reclaimed_and_the_old_worker_is_refused() {
     let fetcher = serve(|_| page(None)).await;
     let id = register(&db, &url("/a.html")).await;
 
-    let first = claim::claim(&db, &[id], "worker-1", LEASE).await.unwrap();
+    let first = claim::claim(&db, &[id], "worker-1", LEASE, Duration::ZERO)
+        .await
+        .unwrap();
     assert_eq!(first.len(), 1);
     assert_eq!(first[0].claim_token, 1);
     assert_eq!(first[0].url, url_row(&db, id).await.normalized_url);
@@ -150,7 +156,9 @@ async fn an_expired_lease_is_reclaimed_and_the_old_worker_is_refused() {
         candidate_ids(&db, &Exclude::default()).await,
         BTreeSet::from([id])
     );
-    let second = claim::claim(&db, &[id], "worker-2", LEASE).await.unwrap();
+    let second = claim::claim(&db, &[id], "worker-2", LEASE, Duration::ZERO)
+        .await
+        .unwrap();
     assert_eq!(second.len(), 1);
     assert_eq!(second[0].claim_token, 2);
     let row = url_row(&db, id).await;
@@ -193,8 +201,8 @@ async fn two_claims_at_once_never_share_a_url() {
 
     let ids = [id];
     let (one, two) = tokio::join!(
-        claim::claim(&db, &ids, "worker-1", LEASE),
-        claim::claim(&db, &ids, "worker-2", LEASE),
+        claim::claim(&db, &ids, "worker-1", LEASE, Duration::ZERO),
+        claim::claim(&db, &ids, "worker-2", LEASE, Duration::ZERO),
     );
     assert_eq!(one.unwrap().len() + two.unwrap().len(), 1);
     assert_eq!(url_row(&db, id).await.claim_token, 1);
@@ -206,7 +214,9 @@ async fn extend_needs_the_current_token() {
         return;
     };
     let id = register(&db, &url("/a.html")).await;
-    let claims = claim::claim(&db, &[id], "worker-1", LEASE).await.unwrap();
+    let claims = claim::claim(&db, &[id], "worker-1", LEASE, Duration::ZERO)
+        .await
+        .unwrap();
     let token = claims[0].claim_token;
     let before = lease_until(&db, id).await;
 
@@ -251,11 +261,15 @@ async fn urls_of_an_excluded_resource_give_way_to_the_next_url_of_the_host() {
     assert_eq!(candidate_ids(&db, &exclude).await, BTreeSet::from([b]));
     assert_eq!(candidate_ids(&db, &taken_by_a).await, BTreeSet::from([a]));
     // 候補はいまの資源を持つ（1回の claim の中で資源が重ならないようにするため）
-    let listed = claim::candidates(&db, &Exclude::default()).await.unwrap();
+    let listed = claim::candidates(&db, &Exclude::default(), Duration::ZERO)
+        .await
+        .unwrap();
     assert_eq!(listed[0].resource_id, Some(resource));
 
     // 資源を取った URL は claim したときに分かる
-    let claims = claim::claim(&db, &[a], "worker-1", LEASE).await.unwrap();
+    let claims = claim::claim(&db, &[a], "worker-1", LEASE, Duration::ZERO)
+        .await
+        .unwrap();
     assert_eq!(claims[0].resource_id, Some(resource));
     expire_lease(&db, a).await;
 
@@ -295,4 +309,83 @@ async fn an_excluded_host_has_no_candidate_and_no_retry() {
             .is_some()
     );
     assert_eq!(claim::next_retry_in(&db, &exclude).await.unwrap(), None);
+}
+
+const AHEAD: Duration = Duration::from_secs(2 * 86_400);
+
+#[tokio::test]
+async fn a_url_due_within_the_window_is_taken_early() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let soon = register(&db, &url("/soon.html")).await;
+    set_status(&db, soon, "succeeded", "now() + interval '1 day'").await;
+
+    assert!(
+        claim::candidates(&db, &Exclude::default(), Duration::ZERO)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        claim::claim(&db, &[soon], "worker-1", LEASE, Duration::ZERO)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let candidates = claim::candidates(&db, &Exclude::default(), AHEAD)
+        .await
+        .unwrap();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(
+        claim::claim(&db, &[soon], "worker-1", LEASE, AHEAD)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn a_url_due_after_the_window_is_left_alone() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let later = register(&db, &url("/later.html")).await;
+    set_status(&db, later, "succeeded", "now() + interval '3 days'").await;
+
+    assert!(
+        claim::candidates(&db, &Exclude::default(), AHEAD)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        claim::claim(&db, &[later], "worker-1", LEASE, AHEAD)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn a_retry_is_not_taken_before_its_backoff_ends() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let waiting = register(&db, &url("/waiting.html")).await;
+    set_status(&db, waiting, "retry_wait", "now() + interval '5 minutes'").await;
+
+    assert!(
+        claim::candidates(&db, &Exclude::default(), AHEAD)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        claim::claim(&db, &[waiting], "worker-1", LEASE, AHEAD)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }

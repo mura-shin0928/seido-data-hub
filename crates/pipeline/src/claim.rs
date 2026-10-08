@@ -2,6 +2,10 @@
 //!
 //! 候補の条件（取れる状態で時刻が来たこと、そのホストに有効な lease が無いこと）は `claimable` の1か所に置き、
 //! 候補・claim・再試行までの残りが同じ条件を使う。時刻の比較と書き込みは DB の時計（`now()`）で行う。
+//!
+//! 候補と claim は、時刻の来る少し前の行も取れる（`ahead`）。週1の起動は毎回数分ずれるので、
+//! 余裕が無いと7日間隔の行が「まだ」になって1週飛ぶ。再試行を待つ行には当てない
+//! （バックオフと `Retry-After` を守る）。
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
@@ -47,16 +51,22 @@ pub struct Exclude {
     pub resources: BTreeMap<Uuid, Uuid>,
 }
 
-/// 候補の条件（`u` は urls）。`due` が false なら時刻の条件を外す。
+/// 候補の条件（`u` は urls）。`due` が None なら時刻の条件を外す。Some なら、その幅だけ先の時刻まで取る。
 ///
-/// - 時刻: `processing` 以外で `next_crawl_at` が来た行、または lease の切れた `processing`
+/// - 時刻: `next_crawl_at` が now + 幅 までに来る行、または lease の切れた `processing`。
+///   `retry_wait` は幅を当てず、時刻どおり（先取りでバックオフと `Retry-After` を縮めない）
 /// - ホスト: 同じホストに有効な lease の `processing` が無いこと
-fn claimable(due: bool) -> String {
-    let time = if due {
-        "((u.status <> 'processing' AND u.next_crawl_at <= now()) \
-          OR (u.status = 'processing' AND u.lease_until < now()))"
-    } else {
-        "TRUE"
+fn claimable(due: Option<Duration>) -> String {
+    let time = match due {
+        // 秒は整数なので、そのまま SQL に埋める
+        Some(ahead) => format!(
+            "((u.status NOT IN ('processing', 'retry_wait') \
+                AND u.next_crawl_at <= now() + make_interval(secs => {})) \
+              OR (u.status = 'retry_wait' AND u.next_crawl_at <= now()) \
+              OR (u.status = 'processing' AND u.lease_until < now()))",
+            ahead.as_secs()
+        ),
+        None => "TRUE".to_string(),
     };
     format!(
         "{time} AND NOT EXISTS (\
@@ -87,10 +97,11 @@ fn exclude_values(exclude: &Exclude) -> [Value; 3] {
     [hosts.into(), resources.into(), takers.into()]
 }
 
-/// 時刻が来た URL を、ホストごとに先頭1件（priority 降順 → next_crawl_at → id）
+/// 時刻が来た（`ahead` だけ先まで含む）URL を、ホストごとに先頭1件（priority 降順 → next_crawl_at → id）
 pub async fn candidates(
     db: &impl ConnectionTrait,
     exclude: &Exclude,
+    ahead: Duration,
 ) -> anyhow::Result<Vec<Candidate>> {
     let sql = format!(
         "SELECT DISTINCT ON (u.host_key) u.id AS url_id, u.host_key, u.priority, u.next_crawl_at, \
@@ -98,7 +109,7 @@ pub async fn candidates(
          FROM urls u {CURRENT_RESOURCE} \
          WHERE {} AND {NOT_EXCLUDED} \
          ORDER BY u.host_key, u.priority DESC, u.next_crawl_at, u.id",
-        claimable(true)
+        claimable(Some(ahead))
     );
     Candidate::find_by_statement(Statement::from_sql_and_values(
         DbBackend::Postgres,
@@ -130,7 +141,7 @@ pub fn pick(
     candidates
 }
 
-/// 渡した URL のうち、まだ候補の条件を満たすものだけを claim する（FOR UPDATE SKIP LOCKED）。
+/// 渡した URL のうち、まだ候補の条件（`ahead` は `candidates` と同じ値）を満たすものだけを claim する（FOR UPDATE SKIP LOCKED）。
 ///
 /// 1つの文で選んで書くので、選んだ行と書いた行はずれない。他の claim がロック中の行は飛ばす。
 /// 同じホストの URL を一度に渡すと両方 claim する（ホストに1件は呼び出し側が `candidates` で守る）
@@ -139,6 +150,7 @@ pub async fn claim(
     url_ids: &[Uuid],
     worker_id: &str,
     lease: Duration,
+    ahead: Duration,
 ) -> anyhow::Result<Vec<Claim>> {
     if url_ids.is_empty() {
         return Ok(Vec::new());
@@ -156,7 +168,7 @@ pub async fn claim(
              (SELECT ur.resource_id FROM url_resources ur \
               WHERE ur.url_id = urls.id ORDER BY ur.observed_at DESC LIMIT 1) AS resource_id, \
              picked.lease_expired",
-        claimable(true)
+        claimable(Some(ahead))
     );
     let mut claims = Claim::find_by_statement(Statement::from_sql_and_values(
         DbBackend::Postgres,
@@ -208,7 +220,7 @@ pub async fn next_retry_in(
         "SELECT extract(epoch from min(u.next_crawl_at) - now())::float8 AS secs \
          FROM urls u {CURRENT_RESOURCE} \
          WHERE u.status = 'retry_wait' AND {} AND {NOT_EXCLUDED}",
-        claimable(false)
+        claimable(None)
     );
     let row = db
         .query_one_raw(Statement::from_sql_and_values(

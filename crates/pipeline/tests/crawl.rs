@@ -284,7 +284,7 @@ async fn an_expired_lease_left_by_a_dead_worker_is_picked_up_by_the_next_run() {
     };
     let fetcher = Arc::new(serve(|_| page(None)).await);
     let id = register(&db, &url("/a.html")).await;
-    claim::claim(&db, &[id], "dead", Duration::from_secs(600))
+    claim::claim(&db, &[id], "dead", Duration::from_secs(600), Duration::ZERO)
         .await
         .unwrap();
     db.execute_raw(Statement::from_sql_and_values(
@@ -472,7 +472,7 @@ async fn heartbeat_keeps_a_slow_fetch_from_being_reclaimed() {
     tokio::time::sleep(Duration::from_millis(1200)).await;
     // lease（1秒）は切れているはずの時刻だが、heartbeat が延ばしている
     assert!(
-        claim::candidates(&db, &Exclude::default())
+        claim::candidates(&db, &Exclude::default(), Duration::ZERO)
             .await
             .unwrap()
             .is_empty()
@@ -737,9 +737,15 @@ async fn a_retry_and_a_reclaimed_lease_are_counted_by_the_loop() {
     );
     register(&db, &url("/flaky.html")).await;
     let left = register(&db, &url("/left.html")).await;
-    claim::claim(&db, &[left], "dead", Duration::from_secs(600))
-        .await
-        .unwrap();
+    claim::claim(
+        &db,
+        &[left],
+        "dead",
+        Duration::from_secs(600),
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
     db.execute_raw(Statement::from_sql_and_values(
         DbBackend::Postgres,
         "update urls set lease_until = now() - interval '1 second' where id = $1",
@@ -793,4 +799,52 @@ async fn a_run_where_robots_txt_cannot_be_read_anywhere_is_recorded_with_an_aler
         row.alerts
             .is_some_and(|alerts| alerts != serde_json::json!([]))
     );
+}
+
+#[tokio::test]
+async fn a_run_with_a_window_fetches_a_url_due_soon_exactly_once() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let fetcher = Arc::new(serve(|_| page(None)).await);
+    let id = register(&db, &url("/a.html")).await;
+    run_once(&db, &fetcher).await;
+    set_status(&db, id, "succeeded", "now() + interval '1 day'").await;
+
+    run_once(&db, &fetcher).await;
+    assert_eq!(history_count(&db, id).await, 1);
+
+    let config = Config {
+        due_within: Duration::from_secs(2 * 86_400),
+        ..run_config()
+    };
+    let summary = timeout(
+        Duration::from_secs(10),
+        run(&db, fetcher.clone(), start_run(&db).await, &config),
+    )
+    .await
+    .expect("実行が終わる")
+    .unwrap();
+    assert_eq!(summary.saved, 1);
+    assert_eq!(history_count(&db, id).await, 2);
+}
+
+#[tokio::test]
+async fn a_window_as_long_as_the_shortest_interval_is_refused() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let fetcher = Arc::new(serve(|_| page(None)).await);
+    let id = register(&db, &url("/a.html")).await;
+    let config = run_config();
+    let config = Config {
+        due_within: config.policy.shortest_interval(),
+        ..config
+    };
+
+    let error = run(&db, fetcher, start_run(&db).await, &config)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("先取り"), "{error}");
+    assert_eq!(history_count(&db, id).await, 0);
 }

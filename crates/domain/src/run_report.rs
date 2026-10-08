@@ -127,6 +127,9 @@ pub struct ConfigSnapshot {
     pub connect_timeout_ms: u64,
     pub timeout_ms: u64,
     pub max_retries: i32,
+    /// 時刻の来るこの秒数だけ前の URL も取った。この項目を足す前の実行には無いので、無ければ0
+    #[serde(default)]
+    pub due_within_secs: u64,
 }
 
 /// 実行の結果から立つ警告
@@ -354,8 +357,12 @@ pub fn render_markdown(meta: &RunMeta, stats: &RunStats, alerts: &[Alert]) -> St
     ));
 
     if let Some(c) = &meta.config {
+        let due_within = match c.due_within_secs {
+            0 => String::new(),
+            secs => format!("・先取り {} 時間", secs / 3600),
+        };
         md.push_str(&format!(
-            "- 設定: 同時 {} 件・同一ホスト 1 件・間隔 {:.1} 秒・lease {} 秒・再試行 {} 回（worker {}）\n",
+            "- 設定: 同時 {} 件・同一ホスト 1 件・間隔 {:.1} 秒・lease {} 秒・再試行 {} 回{due_within}（worker {}）\n",
             c.concurrency,
             c.min_interval_ms as f64 / 1000.0,
             c.lease_secs,
@@ -703,6 +710,7 @@ mod tests {
                 connect_timeout_ms: 5000,
                 timeout_ms: 30000,
                 max_retries: 3,
+                due_within_secs: 172_800,
             }),
             ..meta()
         };
@@ -711,7 +719,7 @@ mod tests {
         assert!(md.contains("1分あたり 4.0 件"), "{md}");
         assert!(
             md.contains(
-                "同時 4 件・同一ホスト 1 件・間隔 1.5 秒・lease 300 秒・再試行 3 回（worker w1）"
+                "同時 4 件・同一ホスト 1 件・間隔 1.5 秒・lease 300 秒・再試行 3 回・先取り 48 時間（worker w1）"
             ),
             "{md}"
         );
@@ -723,6 +731,22 @@ mod tests {
             md.contains("| 再試行 / failed_final / lease 切れ | 2 / 0 / 1 |"),
             "{md}"
         );
+    }
+
+    #[test]
+    fn a_config_saved_before_the_window_existed_still_loads() {
+        let json = serde_json::json!({
+            "worker_id": "w1", "concurrency": 16, "min_interval_ms": 2000, "lease_secs": 600,
+            "heartbeat_secs": 120, "connect_timeout_ms": 10000, "timeout_ms": 30000, "max_retries": 2
+        });
+        let config = serde_json::from_value::<ConfigSnapshot>(json).unwrap();
+        assert_eq!(config.due_within_secs, 0);
+        let m = RunMeta {
+            config: Some(config),
+            ..meta()
+        };
+        let md = render_markdown(&m, &RunStats::default(), &[]);
+        assert!(md.contains("再試行 2 回（worker w1）"), "{md}");
     }
 
     #[test]

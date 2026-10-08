@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -53,6 +54,9 @@ enum Command {
         /// crawl_runs に残す実行の種類（例: sweep）
         #[arg(long, default_value = "manual")]
         kind: String,
+        /// 時刻の来るこの時間だけ前の URL も取る（定期実行の起動のずれを吸収する）。最短の間隔（3日）より短くする
+        #[arg(long, default_value_t = 0)]
+        due_within_hours: u64,
     },
     /// 実行のサマリーを出す（DATABASE_URL を使う）。既定は最新の実行。
     /// 途中で止まった実行は履歴から数え直す（再試行・lease 切れの数は出ない）
@@ -128,13 +132,19 @@ async fn main() -> anyhow::Result<()> {
                 print_fetch(url, &fetcher.fetch(url, &validators).await, body);
             }
         }
-        Command::Crawl { kind } => {
+        Command::Crawl {
+            kind,
+            due_within_hours,
+        } => {
             let database_url = std::env::var("DATABASE_URL").context("DATABASE_URL が無い")?;
             let db = sea_orm::Database::connect(&database_url).await?;
             let allowed = crawl::allowed_hosts(&db).await?;
             let fetcher = Arc::new(Fetcher::new(Config::default(), allowed)?);
-            let (_, _, report) =
-                crawl::run_recorded(&db, fetcher, &kind, &crawl::Config::default()).await?;
+            let config = crawl::Config {
+                due_within: Duration::from_secs(due_within_hours * 3600),
+                ..crawl::Config::default()
+            };
+            let (_, _, report) = crawl::run_recorded(&db, fetcher, &kind, &config).await?;
             let markdown = render_markdown(&report.meta, &report.stats, &report.alerts);
             println!("{markdown}");
             if let Some(path) = std::env::var_os("GITHUB_STEP_SUMMARY")

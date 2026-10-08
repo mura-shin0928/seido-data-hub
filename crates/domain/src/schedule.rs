@@ -111,6 +111,20 @@ impl Policy {
         }
     }
 
+    /// 次に取るまでの最短の間隔（どの種類の下限よりも、`FailedFinal` の再評価よりも短くない値）
+    pub fn shortest_interval(&self) -> Duration {
+        [
+            self.page.min,
+            self.pdf.min,
+            self.deletion_candidate.min,
+            self.blocked.min,
+            self.failed_final_interval,
+        ]
+        .into_iter()
+        .min()
+        .unwrap_or(Duration::ZERO)
+    }
+
     /// 実行の中で再試行を待つ上限（`retry_cap` + `jitter_max`）
     pub fn longest_retry_wait(&self) -> Duration {
         self.retry_cap + self.jitter_max
@@ -261,6 +275,16 @@ mod tests {
 
     fn d(n: u64) -> Duration {
         Duration::from_secs(n * 86_400)
+    }
+
+    #[test]
+    fn the_shortest_interval_is_the_smallest_minimum() {
+        assert_eq!(Policy::default().shortest_interval(), d(3));
+        let policy = Policy {
+            failed_final_interval: Duration::from_secs(3600),
+            ..Policy::default()
+        };
+        assert_eq!(policy.shortest_interval(), Duration::from_secs(3600));
     }
 
     fn ok(kind: Kind, change: Change) -> Visit {

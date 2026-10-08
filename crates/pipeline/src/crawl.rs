@@ -40,6 +40,9 @@ pub struct Config {
     pub heartbeat: Duration,
     /// 再試行と次の時刻
     pub policy: Policy,
+    /// 時刻の来るこの幅だけ前の URL も取る。週1の起動のずれで7日間隔の URL が1週飛ぶのを防ぐ。
+    /// 最短の間隔（`Policy::shortest_interval`）より短くする
+    pub due_within: Duration,
 }
 
 impl Default for Config {
@@ -50,6 +53,7 @@ impl Default for Config {
             lease: Duration::from_secs(600),
             heartbeat: Duration::from_secs(120),
             policy: Policy::default(),
+            due_within: Duration::ZERO,
         }
     }
 }
@@ -89,6 +93,7 @@ pub fn snapshot(config: &Config, fetch: &fetch::Config) -> ConfigSnapshot {
         connect_timeout_ms: fetch.connect_timeout.as_millis() as u64,
         timeout_ms: fetch.timeout.as_millis() as u64,
         max_retries: config.policy.max_retries,
+        due_within_secs: config.due_within.as_secs(),
     }
 }
 
@@ -114,12 +119,20 @@ struct Done {
 /// - robots.txt が読めないホスト（転送先で読めなかったときは claim したホストも）は、この実行の残りでは claim しない
 /// - 取得中が無く候補も無いとき、近い再試行（`longest_retry_wait` 以内）があればそこまで待ち、無ければ終わる
 /// - 記録が失敗したら残りを止めてエラーを返す。取得中だった行は lease が切れて次の実行で回収される
+/// - 先取りの幅が最短の間隔以上なら、始めずにエラーを返す（取った直後の URL がまた候補になり、取り続けるため）
 pub async fn run(
     db: &DatabaseConnection,
     fetcher: Arc<Fetcher>,
     run_id: Uuid,
     config: &Config,
 ) -> anyhow::Result<Summary> {
+    let shortest = config.policy.shortest_interval();
+    anyhow::ensure!(
+        config.due_within < shortest,
+        "先取りの幅（{}秒）は最短の間隔（{}秒）より短くする",
+        config.due_within.as_secs(),
+        shortest.as_secs()
+    );
     let mut summary = Summary::default();
     let mut in_flight: BTreeMap<Uuid, InFlight> = BTreeMap::new();
     // 資源 → この実行でそれを最初に取った URL
@@ -145,7 +158,7 @@ pub async fn run(
 
         let free = config.concurrency.saturating_sub(tasks.len());
         if free > 0 {
-            let candidates = claim::candidates(db, &exclude).await?;
+            let candidates = claim::candidates(db, &exclude, config.due_within).await?;
             let picked = claim::pick(
                 candidates,
                 |host| fetcher.ready_at(host),
@@ -168,7 +181,9 @@ pub async fn run(
                 })
                 .map(|candidate| candidate.url_id)
                 .collect();
-            for claim in claim::claim(db, &ids, &config.worker_id, config.lease).await? {
+            let claims =
+                claim::claim(db, &ids, &config.worker_id, config.lease, config.due_within).await?;
+            for claim in claims {
                 if !attempted.insert(claim.url_id) {
                     summary.retries += 1;
                 }
