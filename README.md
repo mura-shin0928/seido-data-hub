@@ -69,9 +69,15 @@ cargo run --release -p pipeline -- crawl --kind sweep
 正常に終えたときだけ `finished_at` が入る。取得の履歴は `fetch_history` に URL ごとに1行（応答の status・Content-Type・
 文字コード・資源への観測・エラーの理由）。次に取るまでの間隔は、内容が変わったら半分・変わらなければ1.5倍にし、HTML は3〜14日・PDF は14〜90日・見つからないページは3〜7日・取れない（403・robots）ページは7〜30日に収める（初めは HTML 7日・PDF 30日）。本文を最後に読んでから4週経った URL と、本文を一度も読んでいない URL は、条件付きヘッダ（ETag・Last-Modified）を付けずに取る。PDF の間隔は4週とほぼ同じか長いので、PDF はたいてい毎回付けずに取る（生きている PDF は少ないので受け入れる）。時刻が来るまでは取らないので、
 続けて流しても取り直さない。途中で止めたら、10分（lease の長さ）後に流し直せば続きから進む。
+`--due-within-hours <時間>` を付けると、時刻の来るその時間だけ前の URL も取る（既定は0。最短の間隔の3日より短くする。再試行を待っている URL には当てない）。
+`--min-responses <件数>` を付けると、応答がその件数に満たない実行を警告にする（既定は0で、見ない）。
+
+本番では、GitHub Actions の `Crawl`（`.github/workflows/crawl.yml`）が毎週月曜 03:17 JST に
+`crawl --kind scheduled --due-within-hours 48 --min-responses 1` を流す。前の実行が終わるまで次は待たされる。
+失敗の見方と流し直し方は [docs/scheduled-crawl.md](docs/scheduled-crawl.md)。
 
 終わりに実行サマリー（ホスト別の status・304 の割合・変更率・404 など）を出し、`crawl_runs` の `stats`・`alerts` にも残す。
-Actions では `GITHUB_STEP_SUMMARY` に追記する。429・5xx の急増・全件失敗・変更率50%超・lease 切れの多発に当たったら、
+Actions では `GITHUB_STEP_SUMMARY` に追記する。429・5xx の急増・全件失敗・変更率50%超・lease 切れの多発・応答の下限（`--min-responses`）に当たったら、
 記録したうえで終了コード1で終える。過去の実行のサマリーは `run-report` で見る（DB には書かない）:
 
 ```bash

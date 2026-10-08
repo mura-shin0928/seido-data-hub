@@ -282,13 +282,14 @@ pub async fn alerts_for(
     db: &impl ConnectionTrait,
     run_id: Uuid,
     stats: &RunStats,
+    thresholds: &Thresholds,
 ) -> anyhow::Result<Vec<Alert>> {
     // 前回の集計は、保存した値ではなく履歴から数え直す（数え方を変えても同じ定義で比べるため）
     let previous = match previous_run(db, run_id).await? {
         Some(previous) => Some(collect(db, previous, None).await?),
         None => None,
     };
-    Ok(alerts(stats, previous.as_ref(), &Thresholds::default()))
+    Ok(alerts(stats, previous.as_ref(), thresholds))
 }
 
 /// `finished_at` を今にし、集計と警告を1つの UPDATE で書く
@@ -334,7 +335,7 @@ pub async fn load(db: &impl ConnectionTrait, run_id: Option<Uuid>) -> anyhow::Re
     };
     let alerts: Vec<Alert> = match row.alerts {
         Some(value) => serde_json::from_value(value).context("保存した警告を読めない")?,
-        None => alerts_for(db, row.id, &stats).await?,
+        None => alerts_for(db, row.id, &stats, &Thresholds::default()).await?,
     };
     Ok(Report {
         meta: RunMeta {

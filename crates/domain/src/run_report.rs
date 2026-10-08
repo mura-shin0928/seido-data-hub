@@ -127,6 +127,9 @@ pub struct ConfigSnapshot {
     pub connect_timeout_ms: u64,
     pub timeout_ms: u64,
     pub max_retries: i32,
+    /// 時刻の来るこの秒数だけ前の URL も取った。この項目を足す前の実行には無いので、無ければ0
+    #[serde(default)]
+    pub due_within_secs: u64,
 }
 
 /// 実行の結果から立つ警告
@@ -149,6 +152,10 @@ pub enum Alert {
     LeaseExpiredOften {
         lease_expired: u64,
         fetched: u64,
+    },
+    TooFewResponses {
+        responses: u64,
+        expected: u64,
     },
 }
 
@@ -199,6 +206,13 @@ impl fmt::Display for Alert {
                 f,
                 "lease 切れの再 claim が {lease_expired} 件（取得 {fetched} 件）"
             ),
+            Alert::TooFewResponses {
+                responses,
+                expected,
+            } => write!(
+                f,
+                "応答が {responses} 件しか無い（{expected} 件以上を見込む。接続先の DB と、時刻の来た URL があるかを確かめる）"
+            ),
         }
     }
 }
@@ -220,6 +234,8 @@ pub struct Thresholds {
     pub lease_min_count: u64,
     /// 取得に対する lease 切れの割合がこれ以上
     pub lease_min_rate: f64,
+    /// 応答がこの件数に満たなければ警告。0 は見ない
+    pub min_responses: u64,
 }
 
 impl Default for Thresholds {
@@ -232,6 +248,7 @@ impl Default for Thresholds {
             change_max_rate: 0.5,
             lease_min_count: 10,
             lease_min_rate: 0.05,
+            min_responses: 0,
         }
     }
 }
@@ -280,6 +297,14 @@ pub fn alerts(
         .all(|key| key == "robots_unavailable" || key.starts_with("network:"));
     if fetched >= 1 && total.responses() == 0 && only_network_failures {
         out.push(Alert::AllFailed { fetched });
+    }
+
+    // 何も取らずに正常に終わる実行（接続先が空・時刻の来た URL が無い）を拾う
+    if thresholds.min_responses > 0 && total.responses() < thresholds.min_responses {
+        out.push(Alert::TooFewResponses {
+            responses: total.responses(),
+            expected: thresholds.min_responses,
+        });
     }
 
     if total.compared >= thresholds.change_min_compared
@@ -354,8 +379,12 @@ pub fn render_markdown(meta: &RunMeta, stats: &RunStats, alerts: &[Alert]) -> St
     ));
 
     if let Some(c) = &meta.config {
+        let due_within = match c.due_within_secs {
+            0 => String::new(),
+            secs => format!("・先取り {} 時間", secs / 3600),
+        };
         md.push_str(&format!(
-            "- 設定: 同時 {} 件・同一ホスト 1 件・間隔 {:.1} 秒・lease {} 秒・再試行 {} 回（worker {}）\n",
+            "- 設定: 同時 {} 件・同一ホスト 1 件・間隔 {:.1} 秒・lease {} 秒・再試行 {} 回{due_within}（worker {}）\n",
             c.concurrency,
             c.min_interval_ms as f64 / 1000.0,
             c.lease_secs,
@@ -583,6 +612,48 @@ mod tests {
     }
 
     #[test]
+    fn too_few_responses_are_flagged_only_when_a_floor_is_set() {
+        assert!(alerts(&RunStats::default(), None, &Thresholds::default()).is_empty());
+
+        let t = Thresholds {
+            min_responses: 1,
+            ..Thresholds::default()
+        };
+        assert_eq!(
+            alerts(&RunStats::default(), None, &t),
+            vec![Alert::TooFewResponses {
+                responses: 0,
+                expected: 1
+            }]
+        );
+        assert!(alerts(&stats(vec![(CITY, host(&[(403, 1)]))]), None, &t).is_empty());
+
+        // 見送ったホストだけが残った実行の形: 全件失敗と両方立つ
+        let mut h = HostStats::default();
+        h.stopped.insert("robots_unavailable".into(), 2);
+        assert_eq!(
+            alerts(&stats(vec![(CITY, h)]), None, &t),
+            vec![
+                Alert::AllFailed { fetched: 2 },
+                Alert::TooFewResponses {
+                    responses: 0,
+                    expected: 1
+                }
+            ]
+        );
+
+        let a = Alert::TooFewResponses {
+            responses: 0,
+            expected: 1,
+        };
+        assert_eq!(
+            serde_json::to_value(&a).unwrap()["kind"],
+            "too_few_responses"
+        );
+        assert!(a.to_string().contains("応答が 0 件"), "{a}");
+    }
+
+    #[test]
     fn server_side_stops_alone_do_not_flag_an_outage() {
         let t = Thresholds::default();
         let mut h = HostStats::default();
@@ -703,6 +774,7 @@ mod tests {
                 connect_timeout_ms: 5000,
                 timeout_ms: 30000,
                 max_retries: 3,
+                due_within_secs: 172_800,
             }),
             ..meta()
         };
@@ -711,7 +783,7 @@ mod tests {
         assert!(md.contains("1分あたり 4.0 件"), "{md}");
         assert!(
             md.contains(
-                "同時 4 件・同一ホスト 1 件・間隔 1.5 秒・lease 300 秒・再試行 3 回（worker w1）"
+                "同時 4 件・同一ホスト 1 件・間隔 1.5 秒・lease 300 秒・再試行 3 回・先取り 48 時間（worker w1）"
             ),
             "{md}"
         );
@@ -723,6 +795,22 @@ mod tests {
             md.contains("| 再試行 / failed_final / lease 切れ | 2 / 0 / 1 |"),
             "{md}"
         );
+    }
+
+    #[test]
+    fn a_config_saved_before_the_window_existed_still_loads() {
+        let json = serde_json::json!({
+            "worker_id": "w1", "concurrency": 16, "min_interval_ms": 2000, "lease_secs": 600,
+            "heartbeat_secs": 120, "connect_timeout_ms": 10000, "timeout_ms": 30000, "max_retries": 2
+        });
+        let config = serde_json::from_value::<ConfigSnapshot>(json).unwrap();
+        assert_eq!(config.due_within_secs, 0);
+        let m = RunMeta {
+            config: Some(config),
+            ..meta()
+        };
+        let md = render_markdown(&m, &RunStats::default(), &[]);
+        assert!(md.contains("再試行 2 回（worker w1）"), "{md}");
     }
 
     #[test]

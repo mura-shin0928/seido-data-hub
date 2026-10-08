@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use common::*;
-use domain::run_report::{Alert, Counters, render_markdown};
+use domain::run_report::{Alert, Counters, Thresholds, render_markdown};
 use domain::schedule::Policy;
 use entity::crawl_runs;
 use pipeline::crawl::{Config, run};
@@ -347,7 +347,9 @@ async fn alerts_are_judged_against_the_previous_run_recounted_from_history() {
     let stats = run_report::collect(&db, current, None).await.unwrap();
 
     // 保存値（100%）と比べるなら抑えられるが、履歴から数え直した 5% の2倍（10%）は超える
-    let alerts = run_report::alerts_for(&db, current, &stats).await.unwrap();
+    let alerts = run_report::alerts_for(&db, current, &stats, &Thresholds::default())
+        .await
+        .unwrap();
     assert_eq!(
         alerts,
         vec![Alert::HostErrorsSurged {
@@ -372,7 +374,9 @@ async fn without_a_previous_run_the_comparison_with_it_is_dropped() {
     insert_responses(&db, current, &urls, 5).await;
     let stats = run_report::collect(&db, current, None).await.unwrap();
 
-    let alerts = run_report::alerts_for(&db, current, &stats).await.unwrap();
+    let alerts = run_report::alerts_for(&db, current, &stats, &Thresholds::default())
+        .await
+        .unwrap();
     assert_eq!(
         alerts,
         vec![Alert::HostErrorsSurged {
