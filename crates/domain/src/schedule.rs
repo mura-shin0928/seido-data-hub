@@ -111,7 +111,7 @@ impl Policy {
         }
     }
 
-    /// 次に取るまでの最短の間隔（どの種類の下限よりも、`FailedFinal` の再評価よりも短くない値）
+    /// 次に取るまでの最短の間隔（種類ごとの下限と `FailedFinal` の再評価のうち、最も短いもの）
     pub fn shortest_interval(&self) -> Duration {
         [
             self.page.min,
