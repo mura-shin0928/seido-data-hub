@@ -13,7 +13,7 @@ use std::time::Duration;
 use axum::body::Bytes;
 use common::*;
 use domain::liveness::HostMove;
-use domain::run_report::{Alert, Counters};
+use domain::run_report::{Alert, Counters, Thresholds};
 use domain::schedule::Policy;
 use entity::crawl_runs;
 use entity::{fetch_history, resources, urls as urls_table};
@@ -847,4 +847,43 @@ async fn a_window_as_long_as_the_shortest_interval_is_refused() {
         .unwrap_err();
     assert!(error.to_string().contains("先取り"), "{error}");
     assert_eq!(history_count(&db, id).await, 0);
+}
+
+#[tokio::test]
+async fn a_recorded_run_with_nothing_due_is_flagged_when_responses_are_required() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let fetcher = Arc::new(serve(|_| page(None)).await);
+    register(&db, &url("/a.html")).await;
+    let config = Config {
+        thresholds: Thresholds {
+            min_responses: 1,
+            ..Thresholds::default()
+        },
+        ..run_config()
+    };
+
+    let (_, _, first) = run_recorded(&db, fetcher.clone(), "scheduled", &config)
+        .await
+        .unwrap();
+    assert!(first.alerts.is_empty(), "{:?}", first.alerts);
+
+    let (run_id, _, second) = run_recorded(&db, fetcher, "scheduled", &config)
+        .await
+        .unwrap();
+    assert_eq!(
+        second.alerts,
+        vec![Alert::TooFewResponses {
+            responses: 0,
+            expected: 1
+        }]
+    );
+    let row = crawl_runs::Entity::find_by_id(run_id)
+        .one(&db)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(row.finished_at.is_some());
+    assert_eq!(row.alerts.unwrap()[0]["kind"], "too_few_responses");
 }

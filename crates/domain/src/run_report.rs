@@ -153,6 +153,10 @@ pub enum Alert {
         lease_expired: u64,
         fetched: u64,
     },
+    TooFewResponses {
+        responses: u64,
+        expected: u64,
+    },
 }
 
 /// 率を「100倍して小数1桁＋%」にする
@@ -202,6 +206,13 @@ impl fmt::Display for Alert {
                 f,
                 "lease 切れの再 claim が {lease_expired} 件（取得 {fetched} 件）"
             ),
+            Alert::TooFewResponses {
+                responses,
+                expected,
+            } => write!(
+                f,
+                "応答が {responses} 件しか無い（{expected} 件以上を見込む。接続先の DB と、時刻の来た URL があるかを確かめる）"
+            ),
         }
     }
 }
@@ -223,6 +234,8 @@ pub struct Thresholds {
     pub lease_min_count: u64,
     /// 取得に対する lease 切れの割合がこれ以上
     pub lease_min_rate: f64,
+    /// 応答がこの件数に満たなければ警告。0 は見ない
+    pub min_responses: u64,
 }
 
 impl Default for Thresholds {
@@ -235,6 +248,7 @@ impl Default for Thresholds {
             change_max_rate: 0.5,
             lease_min_count: 10,
             lease_min_rate: 0.05,
+            min_responses: 0,
         }
     }
 }
@@ -283,6 +297,14 @@ pub fn alerts(
         .all(|key| key == "robots_unavailable" || key.starts_with("network:"));
     if fetched >= 1 && total.responses() == 0 && only_network_failures {
         out.push(Alert::AllFailed { fetched });
+    }
+
+    // 何も取らずに正常に終わる実行（接続先が空・時刻の来た URL が無い）を拾う
+    if thresholds.min_responses > 0 && total.responses() < thresholds.min_responses {
+        out.push(Alert::TooFewResponses {
+            responses: total.responses(),
+            expected: thresholds.min_responses,
+        });
     }
 
     if total.compared >= thresholds.change_min_compared
@@ -587,6 +609,48 @@ mod tests {
         );
         assert!(alerts(&RunStats::default(), None, &t).is_empty());
         assert!(alerts(&stats(vec![(CITY, host(&[(403, 1)]))]), None, &t).is_empty());
+    }
+
+    #[test]
+    fn too_few_responses_are_flagged_only_when_a_floor_is_set() {
+        assert!(alerts(&RunStats::default(), None, &Thresholds::default()).is_empty());
+
+        let t = Thresholds {
+            min_responses: 1,
+            ..Thresholds::default()
+        };
+        assert_eq!(
+            alerts(&RunStats::default(), None, &t),
+            vec![Alert::TooFewResponses {
+                responses: 0,
+                expected: 1
+            }]
+        );
+        assert!(alerts(&stats(vec![(CITY, host(&[(403, 1)]))]), None, &t).is_empty());
+
+        // 見送ったホストだけが残った実行の形: 全件失敗と両方立つ
+        let mut h = HostStats::default();
+        h.stopped.insert("robots_unavailable".into(), 2);
+        assert_eq!(
+            alerts(&stats(vec![(CITY, h)]), None, &t),
+            vec![
+                Alert::AllFailed { fetched: 2 },
+                Alert::TooFewResponses {
+                    responses: 0,
+                    expected: 1
+                }
+            ]
+        );
+
+        let a = Alert::TooFewResponses {
+            responses: 0,
+            expected: 1,
+        };
+        assert_eq!(
+            serde_json::to_value(&a).unwrap()["kind"],
+            "too_few_responses"
+        );
+        assert!(a.to_string().contains("応答が 0 件"), "{a}");
     }
 
     #[test]

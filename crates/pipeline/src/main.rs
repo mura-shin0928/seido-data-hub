@@ -9,7 +9,7 @@ use domain::canonical::Decision;
 use domain::extract::{self, Extracted};
 use domain::fetch::CharsetSource;
 use domain::liveness::Verdict;
-use domain::run_report::render_markdown;
+use domain::run_report::{Thresholds, render_markdown};
 use pipeline::crawl;
 use pipeline::fetch::{Body, Config, Fetcher, Outcome, Validators};
 use pipeline::{host_moves, import_registry, lifecycle, resources, run_report};
@@ -57,6 +57,9 @@ enum Command {
         /// 時刻の来るこの時間だけ前の URL も取る（定期実行の起動のずれを吸収する）。最短の間隔（3日）より短くする
         #[arg(long, default_value_t = 0)]
         due_within_hours: u64,
+        /// 応答がこの件数に満たなければ警告にして終了コード1で終える（何も取らない定期実行に気づくため）。0 は見ない
+        #[arg(long, default_value_t = 0)]
+        min_responses: u64,
     },
     /// 実行のサマリーを出す（DATABASE_URL を使う）。既定は最新の実行。
     /// 途中で止まった実行は履歴から数え直す（再試行・lease 切れの数は出ない）
@@ -135,6 +138,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Crawl {
             kind,
             due_within_hours,
+            min_responses,
         } => {
             let database_url = std::env::var("DATABASE_URL").context("DATABASE_URL が無い")?;
             let db = sea_orm::Database::connect(&database_url).await?;
@@ -142,6 +146,10 @@ async fn main() -> anyhow::Result<()> {
             let fetcher = Arc::new(Fetcher::new(Config::default(), allowed)?);
             let config = crawl::Config {
                 due_within: Duration::from_secs(due_within_hours * 3600),
+                thresholds: Thresholds {
+                    min_responses,
+                    ..Thresholds::default()
+                },
                 ..crawl::Config::default()
             };
             let (_, _, report) = crawl::run_recorded(&db, fetcher, &kind, &config).await?;

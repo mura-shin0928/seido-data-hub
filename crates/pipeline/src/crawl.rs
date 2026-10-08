@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::Context as _;
 use domain::canonical::{self, Declaration};
 use domain::extract::{self, Extracted};
-use domain::run_report::{ConfigSnapshot, Counters};
+use domain::run_report::{ConfigSnapshot, Counters, Thresholds};
 use domain::schedule::Policy;
 use domain::urls;
 use entity::{crawl_runs, resources, urls as urls_table};
@@ -43,6 +43,8 @@ pub struct Config {
     /// 時刻の来るこの幅だけ前の URL も取る。週1の起動のずれで7日間隔の URL が1週飛ぶのを防ぐ。
     /// 最短の間隔（`Policy::shortest_interval`）より短くする
     pub due_within: Duration,
+    /// 警告の閾値
+    pub thresholds: Thresholds,
 }
 
 impl Default for Config {
@@ -54,6 +56,7 @@ impl Default for Config {
             heartbeat: Duration::from_secs(120),
             policy: Policy::default(),
             due_within: Duration::ZERO,
+            thresholds: Thresholds::default(),
         }
     }
 }
@@ -297,7 +300,7 @@ pub async fn run_recorded(
     let stats = run_report::collect(db, run_id, Some(counters))
         .await
         .with_context(|| format!("実行 {run_id} の集計を数えられない"))?;
-    let alerts = run_report::alerts_for(db, run_id, &stats)
+    let alerts = run_report::alerts_for(db, run_id, &stats, &config.thresholds)
         .await
         .with_context(|| format!("実行 {run_id} の警告を判定できない"))?;
     run_report::close(db, run_id, &stats, &alerts)
