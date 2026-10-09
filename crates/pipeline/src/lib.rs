@@ -4,6 +4,7 @@ pub mod fetch;
 pub mod host_moves;
 pub mod import_registry;
 pub mod lifecycle;
+pub mod link_related;
 pub mod persist;
 pub mod resources;
 pub mod run_report;
