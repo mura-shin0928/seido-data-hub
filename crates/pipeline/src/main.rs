@@ -12,7 +12,7 @@ use domain::liveness::Verdict;
 use domain::run_report::{Thresholds, render_markdown};
 use pipeline::crawl;
 use pipeline::fetch::{Body, Config, Fetcher, Outcome, Validators};
-use pipeline::{host_moves, import_registry, lifecycle, resources, run_report};
+use pipeline::{host_moves, import_registry, lifecycle, link_related, resources, run_report};
 use sea_orm::prelude::Uuid;
 
 #[derive(Parser)]
@@ -61,6 +61,9 @@ enum Command {
         #[arg(long, default_value_t = 0)]
         min_responses: u64,
     },
+    /// 主たる URL が死んだ制度に、レジストリの行に書かれた同じサイトのページを関連 URL として結ぶ（DATABASE_URL を使う）。
+    /// 1制度3件まで。巡回の前に流すと、続く巡回が生死を確かめる。何度流してもよい
+    LinkRelated,
     /// 実行のサマリーを出す（DATABASE_URL を使う）。既定は最新の実行。
     /// 途中で止まった実行は履歴から数え直す（再試行・lease 切れの数は出ない）
     RunReport {
@@ -162,6 +165,27 @@ async fn main() -> anyhow::Result<()> {
             }
             if !report.alerts.is_empty() {
                 anyhow::bail!("警告が {} 件ある（crawl_runs.alerts）", report.alerts.len());
+            }
+        }
+        Command::LinkRelated => {
+            let database_url = std::env::var("DATABASE_URL").context("DATABASE_URL が無い")?;
+            let db = sea_orm::Database::connect(&database_url).await?;
+            let counts = link_related::link(&db).await?;
+            println!(
+                "関連 URL: 死んだ制度 {} 件 / 候補のある制度 {} 件 / 結び付き {} 件 / URL 新規 {} 件・既存 {} 件",
+                counts.dead_programs,
+                counts.programs_with_related,
+                counts.links,
+                counts.new_urls,
+                counts.existing_urls
+            );
+            if !counts.dropped.is_empty() {
+                let dropped: Vec<String> = counts
+                    .dropped
+                    .iter()
+                    .map(|(reason, n)| format!("{} {n} 件", reason.label()))
+                    .collect();
+                println!("候補にしなかった URL: {}", dropped.join(" / "));
             }
         }
         Command::RunReport { run } => {

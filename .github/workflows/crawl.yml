@@ -1,6 +1,6 @@
 name: Crawl
 
-# 本番（Supabase）への週1の巡回。時刻の来た URL だけを取る。手でも流せる。
+# 本番（Supabase）への週1の巡回。先に、主たる URL が死んだ制度へ関連 URL を結び、そのあと時刻の来た URL を取る。手でも流せる。
 # 警告（429・5xx の急増、全件失敗、変更率50%超、lease 切れの多発、応答が無い）に当たるとジョブが失敗する
 on:
   schedule:
@@ -27,8 +27,15 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo build --release -p pipeline
+      # 前回の巡回で主たる URL が死んだ制度に、関連 URL を結ぶ。続く巡回が生死を確かめる
+      - id: link-related
+        run: ./target/release/pipeline link-related
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      # 関連 URL の登録が失敗しても巡回は流す（ジョブは失敗のまま残る）。ビルドの失敗では流さない
       # 起動は毎回ずれるので、48時間以内に時刻の来る URL も取る（7日間隔の URL が1週飛ばないように）
-      - run: ./target/release/pipeline crawl --kind "$KIND" --due-within-hours 48 --min-responses 1
+      - if: ${{ success() || steps.link-related.conclusion == 'failure' }}
+        run: ./target/release/pipeline crawl --kind "$KIND" --due-within-hours 48 --min-responses 1
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           KIND: ${{ github.event_name == 'schedule' && 'scheduled' || 'manual' }}

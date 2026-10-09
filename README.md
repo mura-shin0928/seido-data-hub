@@ -21,7 +21,7 @@ API として提供する（予定）。
 | `crates/domain` | DB も HTTP も知らない純粋ロジック（レジストリの読み取り・月齢の変換など） |
 | `crates/entity` | SeaORM のエンティティ（`sea-orm-cli generate entity` で DB から生成） |
 | `crates/migration` | スキーマ（SQL を SeaORM の migration で流す） |
-| `crates/pipeline` | データの取り込み・更新を行う CLI。取得の結果は `pipeline::persist::record` が履歴・資源の状態・ジョブの完了とともに1つのトランザクションで保存する。`crawl` で巡回を回す |
+| `crates/pipeline` | データの取り込み・更新を行う CLI。取得の結果は `pipeline::persist::record` が履歴・資源の状態・ジョブの完了とともに1つのトランザクションで保存する。`crawl` で巡回を回し、`link-related` で死んだ制度に関連 URL を結ぶ |
 | `crates/api` | 読み取り専用の HTTP API（axum。Lambda でもローカルでも同じ Router） |
 
 ## ローカル開発
@@ -73,8 +73,23 @@ cargo run --release -p pipeline -- crawl --kind sweep
 `--min-responses <件数>` を付けると、応答がその件数に満たない実行を警告にする（既定は0で、見ない）。
 
 本番では、GitHub Actions の `Crawl`（`.github/workflows/crawl.yml`）が毎週月曜 03:17 JST に
-`crawl --kind scheduled --due-within-hours 48 --min-responses 1` を流す。前の実行が終わるまで次は待たされる。
+`link-related` を流したあと、`crawl --kind scheduled --due-within-hours 48 --min-responses 1` を流す。前の実行が終わるまで次は待たされる。
 失敗の見方と流し直し方は [docs/scheduled-crawl.md](docs/scheduled-crawl.md)。
+
+主たる URL が死んだ制度に、関連 URL を結ぶ（`import-registry` と `crawl` を済ませた DB に対して流す）:
+
+```bash
+cargo run -p pipeline -- link-related
+```
+
+対象は、主たる URL のいまの資源が削除済み（`deleted`）か削除候補（`deletion_candidate`）の制度だけ。
+候補は、その制度の行から次の順に取る: 主たる URL（`localGovernmentLink.uri`）にカンマでつながれた2件目以降 →
+`relatedLink` の URL → `description` に書かれた URL。1制度3件までで、主たる URL とホストが違うもの・許可リストに無いもの・
+主たる URL と同じものは除く。ページでないもの（拡張子が `html`・`htm`・無し・ディレクトリ以外のもの、`/cgi-bin/` を含むもの）も除く。
+結んだ URL は `urls` に `seed` として登録し、`program_urls` には `registry` として結ぶ。既にある URL の行（優先度・状態・次に取る時刻）は触らず、
+新しい URL の優先度は70にする。死んだ制度の関連 URL の結び付きは毎回作り直すが、あとで生き返った制度の結び付きは消さない。
+巡回の前に流すと、続く巡回が関連 URL の生死を確かめる。何度流してもよい。
+終わりに、死んだ制度・候補のある制度・結び付き・新規と既存の URL の件数を出し、候補にしなかった URL があれば理由ごとの件数も出す。
 
 終わりに実行サマリー（ホスト別の status・304 の割合・変更率・404 など）を出し、`crawl_runs` の `stats`・`alerts` にも残す。
 Actions では `GITHUB_STEP_SUMMARY` に追記する。429・5xx の急増・全件失敗・変更率50%超・lease 切れの多発・応答の下限（`--min-responses`）に当たったら、
