@@ -205,3 +205,93 @@ async fn changing_the_registry_url_moves_the_main_link() {
         "https://www.city.example.jp/kosodate/atarashii.html"
     );
 }
+
+#[tokio::test]
+async fn a_related_url_can_become_the_main_url_on_reimport() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    run(&db, FIXTURE).await;
+
+    // 児童手当に teatekaisei.html が related として結ばれている状態で、レジストリの主たる URL がそれに変わる
+    let url = "https://www.city.example.jp/smph/kosodatekyoiku/N84/kakusyuteate/jidoteate/teatekaisei.html";
+    let prepared = domain::urls::prepare(url).unwrap();
+    db.execute_raw(Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "insert into urls (raw_url, normalized_url, dedup_key, host_key) values ($1, $2, $3, $4)",
+        [
+            prepared.raw_url.into(),
+            prepared.normalized_url.into(),
+            prepared.dedup_key.clone().into(),
+            prepared.host_key.into(),
+        ],
+    ))
+    .await
+    .unwrap();
+    db.execute_raw(Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "insert into program_urls (program_id, url_id, role, rank, source) \
+         select p.id, u.id, 'related', 1, 'registry' from programs p, urls u \
+         where p.canonical_name = '児童手当' and u.dedup_key = $1",
+        [prepared.dedup_key.into()],
+    ))
+    .await
+    .unwrap();
+
+    run(&db, &with_source_url(0, url)).await;
+
+    // 取り込みが落ちず、その制度の program_urls は main の1行だけになる
+    assert_eq!(
+        count(
+            &db,
+            "select count(*) from program_urls pu join programs p on p.id = pu.program_id \
+             where p.canonical_name = '児童手当'"
+        )
+        .await,
+        1
+    );
+    assert_eq!(
+        text(
+            &db,
+            "select pu.role from program_urls pu join programs p on p.id = pu.program_id \
+             where p.canonical_name = '児童手当'"
+        )
+        .await,
+        "main"
+    );
+}
+
+#[tokio::test]
+async fn reimport_keeps_related_links() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    run(&db, FIXTURE).await;
+
+    // related を1行結んでから同じ JSON を取り込み直しても、related は残る
+    db.execute_unprepared(
+        "insert into urls (raw_url, normalized_url, dedup_key, host_key) \
+         values ('https://www.city.example.jp/x.html', 'https://www.city.example.jp/x.html', \
+                 'https://www.city.example.jp/x.html', 'https://www.city.example.jp:443')",
+    )
+    .await
+    .unwrap();
+    db.execute_unprepared(
+        "insert into program_urls (program_id, url_id, role, rank, source) \
+         select p.id, u.id, 'related', 1, 'registry' from programs p, urls u \
+         where p.canonical_name = '児童手当' and u.raw_url like '%/x.html'",
+    )
+    .await
+    .unwrap();
+
+    run(&db, FIXTURE).await;
+
+    assert_eq!(
+        count(
+            &db,
+            "select count(*) from program_urls where role = 'related'"
+        )
+        .await,
+        1
+    );
+}

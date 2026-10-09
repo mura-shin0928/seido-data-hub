@@ -191,7 +191,8 @@ pub async fn import(db: &DatabaseConnection, imported: Imported) -> anyhow::Resu
         .collect();
 
     // main は毎回レジストリから作り直す。URL が変わった制度の古い行が残らないようにするため。
-    // 関連 URL（role = related）は消さない
+    // 関連 URL（role = related）は消さない。
+    // その URL が新しい主たる URL になったときは、下の insert で main に書き換える（主キーが重なるため）
     program_urls::Entity::delete_many()
         .filter(program_urls::Column::Role.eq("main"))
         .exec(&txn)
@@ -218,6 +219,15 @@ pub async fn import(db: &DatabaseConnection, imported: Imported) -> anyhow::Resu
         .collect::<anyhow::Result<_>>()?;
     for chunk in links.chunks(CHUNK) {
         program_urls::Entity::insert_many(chunk.to_vec())
+            .on_conflict(
+                OnConflict::columns([program_urls::Column::ProgramId, program_urls::Column::UrlId])
+                    .update_columns([
+                        program_urls::Column::Role,
+                        program_urls::Column::Rank,
+                        program_urls::Column::Source,
+                    ])
+                    .to_owned(),
+            )
             .exec_without_returning(&txn)
             .await
             .context("program_urls を書けない")?;
