@@ -58,7 +58,7 @@ CodeBuild → ビルドプロジェクト → ビルドプロジェクトを作�
 | プロジェクト名 | `seido-data-hub-crawl` | `crawl.yml` の `runs-on:`（`codebuild-seido-data-hub-crawl-…`）と合わせる。違うとジョブが待ったままになる |
 | プロジェクトのタイプ | ランナープロジェクト（Runner project） | |
 | ランナー | プロバイダー GitHub、場所はリポジトリ、`https://github.com/mura-shin0928/seido-data-hub` | 認証情報はカスタムのソース認証情報 → GitHub App → 1 の接続 |
-| 環境 | マネージド型イメージ、EC2、Ubuntu、`aws/codebuild/standard:7.0`（Ubuntu 22.04） | いまの `ubuntu-latest` に一番近い |
+| 環境 | マネージド型イメージ、EC2、Ubuntu、`aws/codebuild/standard:8.0`（Ubuntu 24.04） | いまの `ubuntu-latest`（Ubuntu 24.04）と同じ版。rust-cache のキーには Ubuntu の版が入らず、GitHub のランナーで作ったキャッシュがそのまま戻るので、版を揃えないとビルドの成果物が合わずに落ちうる |
 | コンピューティング | `general1.small`（2 vCPU・3GB）、x86_64 | 仮置き（下を参照） |
 | サービスロール | 既存のサービスロール → 2 のロール | |
 | タイムアウト | 180分 | 仮置き（下を参照） |
@@ -67,7 +67,8 @@ CodeBuild → ビルドプロジェクト → ビルドプロジェクトを作�
 | ログ | CloudWatch Logs を有効にする（グループ `/aws/codebuild/seido-data-hub-crawl`） | |
 | buildspec | 何も書かない | ランナープロジェクトでは使われない |
 
-作った後に、CloudWatch Logs のロググループ `/aws/codebuild/seido-data-hub-crawl` の保持期間を **30日** にする（仮置き）。
+ロググループは最初のビルドで初めてできるので、**プロジェクトを作る前に** CloudWatch Logs でロググループ `/aws/codebuild/seido-data-hub-crawl` を
+作り、保持期間を **30日** にしておく（仮置き）。先に作らないと、保持は無期限のまま残る。
 
 仮置きの根拠と、確定の時期:
 
@@ -85,7 +86,7 @@ CodeBuild → ビルドプロジェクト → ビルドプロジェクトを作�
 |---|---|
 | イベント（`EVENT`） | `WORKFLOW_JOB_QUEUED` だけ |
 | ワークフロー名（`WORKFLOW_NAME`） | `^Crawl$` |
-| アクターの ID（`ACTOR_ACCOUNT_ID`） | `^122416071$` |
+| アクターの ID（`ACTOR_ACCOUNT_ID`。コンソールの表示は `ACTOR_ID`） | `^122416071$` |
 
 `122416071` は GitHub アカウント `mura-shin0928` の ID（`curl -s https://api.github.com/users/mura-shin0928` の `id`）。
 
@@ -96,11 +97,13 @@ CodeBuild → ビルドプロジェクト → ビルドプロジェクトを作�
 
 ## 5. GitHub のリポジトリ設定
 
-Settings → Actions → General → 「Fork pull request workflows from outside collaborators」を
-**Require approval for all outside collaborators** にする。外部の人のフォークからの PR では、ワークフローを動かす前に毎回承認を求める。
+Settings → Actions → General → 「Approval for running fork pull request workflows from contributors」を
+**Require approval for all external contributors** にする。外部の人のフォークからの PR では、ワークフローを動かす前に毎回承認を求める。
+
+この承認は `pull_request_target` で起きるワークフローには効かない。このリポジトリのワークフローに `pull_request_target` を足さない。
 
 守りは、4 の webhook の条件と、この承認と、ランナーの性質（1ジョブごとに使い捨て・ロールに権限が無い・同時に1台まで）の3つを重ねる。
-抜けられても、使われるのは計算時間だけ。
+抜けられた場合に使われるのは、計算時間と、自分の AWS アカウントの東京の IP から外へ出る通信（第三者への不正なアクセスの報告は、自分のアカウントに届く）。
 
 ## 6. 作った後に確かめる
 
@@ -113,7 +116,8 @@ aws iam list-attached-role-policies --role-name seido-data-hub-crawl-codebuild
 ```
 
 - `timeout` が `180`、`limit` が `1`、`vpc` が無い
-- `env` が `LINUX_CONTAINER`・`aws/codebuild/standard:7.0`・`BUILD_GENERAL1_SMALL`
+- `env` が `LINUX_CONTAINER`・`aws/codebuild/standard:8.0`・`BUILD_GENERAL1_SMALL`
+- `aws logs describe-log-groups --log-group-name-prefix /aws/codebuild/seido-data-hub-crawl` の `retentionInDays` が `30`
 - `webhook.filterGroups` が1組で、中身が 4 の3つ
 - ロールに、2 の許可ポリシー以外（`AdministratorAccess` や `*` の許可など）が付いていない
 
@@ -128,5 +132,12 @@ aws iam list-attached-role-policies --role-name seido-data-hub-crawl-codebuild
 `schedule` で起きたジョブの送り手は、cron を最後に変えた人になる見込みだが、確かめていない。
 合わないと、定期実行のジョブが待ったままになる（24時間後に失敗して通知が届く）。
 
-そのときは、4 の条件の組から `ACTOR_ACCOUNT_ID` を外し、`EVENT` と `WORKFLOW_NAME` だけにする。
-守りは、5 の承認とランナーの性質に寄せる（フォークからの PR は、承認しない限りワークフローが動かない）。
+そのときは:
+
+1. 待ったままの実行を取り消す（`gh run cancel <id>`）。条件を直しても、送り済みの webhook は送り直されないので、そのジョブにはランナーが来ない。
+   残しておくと `concurrency` で後の実行が待たされる
+2. 4 の条件の組から `ACTOR_ACCOUNT_ID` を外し、`EVENT` と `WORKFLOW_NAME` だけにする
+3. `gh workflow run crawl.yml` で流し直す
+
+この形では、フォークの PR でもワークフロー名を `Crawl` にすれば条件に合うので、守りはほぼ 5 の承認だけになる
+（承認しない限りフォークの PR のワークフローは動かない）。承認するときは、PR がワークフローを変えていないかを見る。

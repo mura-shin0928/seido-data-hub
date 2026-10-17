@@ -50,7 +50,8 @@ DB（Supabase）と同じ東京で動かし、1件ごとの DB との往復を�
 | 120分で打ち切られた | ジョブが `cancelled`。同上 |
 | ジョブが `Queued` のまま進まない（ランナーが来ない） | CodeBuild のプロジェクト `seido-data-hub-crawl` のビルド履歴と webhook の条件、GitHub との接続の状態（[crawl-runner.md](crawl-runner.md) の 4・7）。`crawl_runs` に行はできない |
 
-ランナーが来ないジョブは、24時間待ってから失敗する。通知もそれまで届かないので、定期実行の朝は、ジョブが動き出したかを Actions の画面で見る。
+ランナーが来ないジョブは、24時間待ってから終わる。それまで通知は届かないので、定期実行の朝は、ジョブが動き出したかを Actions の画面で見る。
+来ていなければ、待ったままの実行を取り消してから（`gh run cancel <id>`）原因を直し、流し直す。残しておくと `concurrency` で後の実行も待たされる。
 
 ログは Actions のジョブのログに加えて、CloudWatch Logs（東京、ロググループ `/aws/codebuild/seido-data-hub-crawl`）にも30日残る。
 
