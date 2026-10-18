@@ -43,15 +43,29 @@ CodeBuild がランナーを GitHub に登録するために使う。個人の�
     },
     {
       "Effect": "Allow",
-      "Action": ["codeconnections:GetConnection", "codeconnections:GetConnectionToken"],
-      "Resource": "<1 の接続の ARN>"
+      "Action": [
+        "codeconnections:GetConnection",
+        "codeconnections:GetConnectionToken",
+        "codeconnections:UseConnection",
+        "codestar-connections:GetConnection",
+        "codestar-connections:GetConnectionToken"
+      ],
+      "Resource": [
+        "<1 の接続の ARN（arn:aws:codeconnections:…）>",
+        "<同じ接続を arn:aws:codestar-connections:… と書いたもの>"
+      ]
     }
   ]
 }
 ```
 
+接続の権限は、コンソールが自動で付けるポリシー（`CodeBuildCodeConnectionsSourceCredentialsPolicy-…`）と同じにしている。
+接続は古い名前（`codestar-connections`）でも呼ばれうるので、両方の名前を許す。
+
 コンソールでプロジェクトを作るときに「新しいサービスロール」を選ぶと、S3 などへの許可も付いたロールができる。
 それは使わず、このロールを「既存のサービスロール」で選ぶ（コンソールにロールの変更を任せるチェックは外す）。
+チェックが入ったままだと、S3 やテストレポートへの権限を持つ `CodeBuildBasePolicy-…` などが自動で足される。足されていたら、
+接続の `CodeBuildCodeConnectionsSourceCredentialsPolicy-…` 以外は外す（`aws iam detach-role-policy`）。
 
 ## 3. CodeBuild のプロジェクト
 
