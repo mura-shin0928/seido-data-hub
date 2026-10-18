@@ -17,6 +17,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
+mod facts;
+
 pub fn router(db: DatabaseConnection) -> Router {
     Router::new()
         .route("/v1/areas", get(list_areas))
