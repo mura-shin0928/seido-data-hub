@@ -26,9 +26,6 @@ pub struct Model {
     pub age_max_months: Option<i32>,
     #[sea_orm(column_type = "JsonBinary")]
     pub registry: Json,
-    #[sea_orm(column_type = "Text")]
-    pub status: String,
-    pub checked_at: Option<DateTimeWithTimeZone>,
     pub imported_at: DateTimeWithTimeZone,
 }
 

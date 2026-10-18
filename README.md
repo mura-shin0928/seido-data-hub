@@ -123,6 +123,9 @@ sea-orm-cli generate entity -u "$DATABASE_URL" -o crates/entity/src --lib --igno
 | `GET /v1/programs/{id}` | 1件の詳細（レジストリの行 `registry` 込み） |
 | `GET /v1/tags` | タグのコードと名前（`categories` / `targets` / `contents`。レジストリ README §3） |
 
+制度（一覧・詳細）は、主たる URL の資源の事実 `url`・`state`・`checked_at`・`changed_at`・`auto_update`・`moved_to`・`related_links` を返す。
+`url` はいま開ける URL、`source_url` はレジストリの値。`related_links` は主たる URL が消えた（`deleted`・`deletion_candidate`）制度にだけ入る。
+
 データは `{"data": ..., "attribution": {...}}` で返し、`attribution` に出典表記（CC BY 4.0）を入れる。
 エラーは `{"error": {"message": ...}}`。
 
