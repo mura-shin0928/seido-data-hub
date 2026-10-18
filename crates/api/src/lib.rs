@@ -9,6 +9,7 @@ use axum::{Json, Router};
 use chrono::{DateTime, FixedOffset};
 use domain::tags::{self, Tag};
 use entity::{areas, programs};
+use facts::ProgramFacts;
 use sea_orm::sea_query::Expr;
 use sea_orm::{
     ColumnTrait, Condition, DatabaseConnection, DbErr, EntityTrait, Order, QueryFilter, QueryOrder,
@@ -90,8 +91,9 @@ struct ProgramView {
     content_codes: Vec<String>,
     age_min_months: Option<i32>,
     age_max_months: Option<i32>,
-    status: String,
-    checked_at: Option<DateTime<FixedOffset>>,
+    /// 主たる URL の資源の事実。制度そのものは状態を持たない
+    #[serde(flatten)]
+    facts: ProgramFacts,
 }
 
 #[derive(Debug, Serialize)]
@@ -103,7 +105,7 @@ struct ProgramDetailView {
     imported_at: DateTime<FixedOffset>,
 }
 
-fn program_view(p: programs::Model) -> ProgramDetailView {
+fn program_view(p: programs::Model, facts: ProgramFacts) -> ProgramDetailView {
     ProgramDetailView {
         program: ProgramView {
             id: p.id,
@@ -117,8 +119,7 @@ fn program_view(p: programs::Model) -> ProgramDetailView {
             content_codes: p.content_codes,
             age_min_months: p.age_min_months,
             age_max_months: p.age_max_months,
-            status: p.status,
-            checked_at: p.checked_at,
+            facts,
         },
         psid: p.psid,
         registry: p.registry,
@@ -189,9 +190,13 @@ async fn list_programs(
         .order_by_asc(programs::Column::Psid)
         .all(&db)
         .await?;
+    let mut facts = facts::load(&db, &sources(&rows)).await?;
     Ok(body(
         rows.into_iter()
-            .map(|p| program_view(p).program)
+            .map(|p| {
+                let f = facts.remove(&p.id).expect("load は渡した制度すべてを返す");
+                program_view(p, f).program
+            })
             .collect::<Vec<_>>(),
     ))
 }
@@ -206,7 +211,18 @@ async fn get_program(
         .one(&db)
         .await?
         .ok_or(NOT_FOUND)?;
-    Ok(body(program_view(program)))
+    let mut facts = facts::load(&db, &sources(std::slice::from_ref(&program))).await?;
+    let f = facts
+        .remove(&program.id)
+        .expect("load は渡した制度すべてを返す");
+    Ok(body(program_view(program, f)))
+}
+
+fn sources(programs: &[programs::Model]) -> Vec<(Uuid, String)> {
+    programs
+        .iter()
+        .map(|p| (p.id, p.source_url.clone()))
+        .collect()
 }
 
 #[derive(Debug, Serialize)]

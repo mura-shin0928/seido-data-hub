@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, FixedOffset};
-use sea_orm::FromQueryResult;
+use sea_orm::{DatabaseConnection, DbBackend, DbErr, FromQueryResult, Statement};
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -111,6 +111,71 @@ pub fn assemble(
         auto_update,
         related_links,
     }
+}
+
+/// 制度に結ばれた URL と、それぞれのいまの資源（`observed_at` が最新の結び付き。`link-related` と同じ見方）
+const URL_ROWS: &str = "\
+    SELECT pu.program_id, pu.role, pu.rank, u.raw_url, u.status AS url_status, current.resource_id \
+    FROM program_urls pu \
+    JOIN urls u ON u.id = pu.url_id \
+    LEFT JOIN LATERAL (SELECT ur.resource_id FROM url_resources ur \
+        WHERE ur.url_id = u.id ORDER BY ur.observed_at DESC LIMIT 1) current ON TRUE \
+    WHERE pu.program_id = ANY($1)";
+
+const RESOURCES: &str = "\
+    SELECT id, canonical_url, state, last_crawled_at, last_changed_at, moved_to_resource_id \
+    FROM resources WHERE id = ANY($1)";
+
+/// `programs`（id と `source_url`）の各制度の事実。DB への問い合わせは、URL の行に1回、
+/// 資源に1回と moved の段ごとに1回（最大 `MAX_MOVED_HOPS` 回）
+pub async fn load(
+    db: &DatabaseConnection,
+    programs: &[(Uuid, String)],
+) -> Result<HashMap<Uuid, ProgramFacts>, DbErr> {
+    let ids: Vec<Uuid> = programs.iter().map(|(id, _)| *id).collect();
+    let rows = UrlRow::find_by_statement(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        URL_ROWS,
+        [ids.into()],
+    ))
+    .all(db)
+    .await?;
+
+    let mut resources: HashMap<Uuid, ResourceRow> = HashMap::new();
+    let mut wanted: Vec<Uuid> = rows.iter().filter_map(|r| r.resource_id).collect();
+    for _ in 0..=MAX_MOVED_HOPS {
+        wanted.sort_unstable();
+        wanted.dedup();
+        wanted.retain(|id| !resources.contains_key(id));
+        if wanted.is_empty() {
+            break;
+        }
+        let found = ResourceRow::find_by_statement(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            RESOURCES,
+            [std::mem::take(&mut wanted).into()],
+        ))
+        .all(db)
+        .await?;
+        wanted = found
+            .iter()
+            .filter(|r| r.state == "moved")
+            .filter_map(|r| r.moved_to_resource_id)
+            .collect();
+        resources.extend(found.into_iter().map(|r| (r.id, r)));
+    }
+
+    let mut by_program: HashMap<Uuid, Vec<UrlRow>> = HashMap::new();
+    for row in rows {
+        by_program.entry(row.program_id).or_default().push(row);
+    }
+    Ok(programs
+        .iter()
+        .map(|(id, source_url)| {
+            let urls = by_program.get(id).map(Vec::as_slice).unwrap_or_default();
+            (*id, assemble(source_url, urls, &resources))
+        })
+        .collect())
 }
 
 /// URL のいまの資源と、いま開ける URL（moved ならたどった先の `canonical_url`）。資源が無ければ None
