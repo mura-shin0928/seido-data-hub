@@ -8,6 +8,7 @@ mod m20260929_000002_create_crawl_history;
 mod m20261003_000001_add_fetch_details;
 mod m20261003_000002_add_run_report;
 mod m20261003_000003_add_recrawl_interval;
+mod m20261018_000001_drop_program_status;
 
 pub struct Migrator;
 
@@ -23,6 +24,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261003_000001_add_fetch_details::Migration),
             Box::new(m20261003_000002_add_run_report::Migration),
             Box::new(m20261003_000003_add_recrawl_interval::Migration),
+            Box::new(m20261018_000001_drop_program_status::Migration),
         ]
     }
 }
