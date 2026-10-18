@@ -7,6 +7,10 @@
 関連 URL の登録が失敗しても巡回は流れる（ジョブは失敗のまま赤く残る）。ビルドが失敗したときは、どちらも流れない。
 Actions の `schedule` は混み具合で起動が遅れることがある。
 
+ジョブは GitHub のランナーではなく、東京（`ap-northeast-1`）の AWS CodeBuild をランナーにして動く。
+DB（Supabase）と同じ東京で動かし、1件ごとの DB との往復を短くするため（米国のランナーでは毎分100件前後で頭打ちになっていた）。
+作り方は [crawl-runner.md](crawl-runner.md)。steps・ログ・実行サマリー・通知は GitHub のまま。
+
 実行は `crawl_runs` に残る。`kind` は、`schedule` で起きたものが `scheduled`、手で流したものが `manual`。
 
 ## どの URL が取られるか
@@ -44,6 +48,12 @@ Actions の `schedule` は混み具合で起動が遅れることがある。
 | 警告に当たって終了コード1（巡回そのものは終わっている） | 実行サマリーの「警告」。`crawl_runs` の `alerts` にも残る |
 | 途中で止まった（DB に繋がらない・記録に失敗した） | ジョブのログ。`crawl_runs.finished_at` が空のまま |
 | 120分で打ち切られた | ジョブが `cancelled`。同上 |
+| ジョブが `Queued` のまま進まない（ランナーが来ない） | CodeBuild のプロジェクト `seido-data-hub-crawl` のビルド履歴と webhook の条件、GitHub との接続の状態（[crawl-runner.md](crawl-runner.md) の 4・7）。`crawl_runs` に行はできない |
+
+ランナーが来ないジョブは、24時間待ってから終わる。それまで通知は届かないので、定期実行の朝は、ジョブが動き出したかを Actions の画面で見る。
+来ていなければ、待ったままの実行を取り消してから（`gh run cancel <id>`）原因を直し、流し直す。残しておくと `concurrency` で後の実行も待たされる。
+
+ログは Actions のジョブのログに加えて、CloudWatch Logs（東京、ロググループ `/aws/codebuild/seido-data-hub-crawl`）にも30日残る。
 
 警告は、429・5xx の急増／全件失敗／内容の変更率50%超／lease 切れの多発／応答が1件も無い（`--min-responses 1`）。
 最後のものは、接続先の DB が空だったり、時刻の来た URL が1件も無かったりして、何も取らずに終わる実行を拾う。
@@ -61,6 +71,13 @@ gh workflow run crawl.yml
 - 定期実行の最中に、手元から本番の DB へ `crawl` を流さない。同じホストに同時に1件までは DB の条件で守られるが、
   同一ホスト2秒の間隔はプロセスの中でしか守られない
 - 巡回の直後に流し直すと、時刻の来た URL が無いので「応答が無い」の警告で失敗する（正しい動き）
+
+## 止める・米国のランナーに戻す
+
+- Actions で実行を取り消すと、CodeBuild のビルドも止まる。止まらずに残ったら、CodeBuild のビルド履歴から止める
+  （同時に1つまでなので、残ったビルドがあると次の実行が待たされる）
+- 米国の GitHub のランナーに戻すには、`crawl.yml` の `runs-on:` を `ubuntu-latest` に戻す。データは壊れない
+  （米国からだと DB との往復で遅くなり、件数の多い週は120分に近づく）
 
 ## 毎週出るもの（失敗ではない）
 

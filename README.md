@@ -74,6 +74,7 @@ cargo run --release -p pipeline -- crawl --kind sweep
 
 本番では、GitHub Actions の `Crawl`（`.github/workflows/crawl.yml`）が毎週月曜 03:17 JST に
 `link-related` を流したあと、`crawl --kind scheduled --due-within-hours 48 --min-responses 1` を流す。前の実行が終わるまで次は待たされる。
+ジョブは DB と同じ東京の AWS CodeBuild をランナーにして動く（作り方は [docs/crawl-runner.md](docs/crawl-runner.md)）。
 失敗の見方と流し直し方は [docs/scheduled-crawl.md](docs/scheduled-crawl.md)。
 
 主たる URL が死んだ制度に、関連 URL を結ぶ（`import-registry` と `crawl` を済ませた DB に対して流す）:

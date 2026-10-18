@@ -18,7 +18,8 @@ permissions:
 
 jobs:
   crawl:
-    runs-on: ubuntu-latest
+    # DB（Supabase）と同じ東京の CodeBuild で動かし、1件ごとの DB との往復を短くする（作り方は docs/crawl-runner.md）
+    runs-on: codebuild-seido-data-hub-crawl-${{ github.run_id }}-${{ github.run_attempt }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
