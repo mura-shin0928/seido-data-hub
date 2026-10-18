@@ -110,6 +110,15 @@ async fn category_filter() {
 }
 
 #[tokio::test]
+async fn empty_list_is_ok() {
+    let Some(db) = db().await else { return };
+    // 該当0件でも、事実の読み出し（空の配列での問い合わせ）でエラーにしない
+    let (status, body) = get(db, "/v1/areas/131130/programs?category=999").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"], serde_json::json!([]));
+}
+
+#[tokio::test]
 async fn program_detail_has_the_registry_row() {
     let Some(db) = db().await else { return };
     let (_, list) = get(db.clone(), "/v1/areas/131130/programs").await;
