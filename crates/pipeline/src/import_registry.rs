@@ -245,7 +245,7 @@ fn area_model(area: ImportedArea) -> areas::ActiveModel {
     }
 }
 
-// id・status・checked_at・imported_at は DB の既定値に任せる。status と checked_at は更新パイプラインの持ち物なので上書きもしない
+// id・imported_at は DB の既定値に任せる
 fn program_model(p: ImportedProgram) -> programs::ActiveModel {
     programs::ActiveModel {
         psid: Set(p.psid),
