@@ -18,6 +18,10 @@ CodeBuild がランナーを GitHub に登録するために使う。個人の�
 2. 「新しいアプリをインストールする」で AWS Connector for GitHub を入れる。入れる先のリポジトリは
    **`mura-shin0928/seido-data-hub` だけ**を選ぶ（Only select repositories）
 3. 接続の状態が「利用可能」になるまで進める。接続の ARN を控える
+4. GitHub の Settings → Applications → Installed GitHub Apps に **AWS Connector for GitHub** が出ていることを確かめる。
+   GitHub での認可だけで済ませると、接続は「利用可能」になるのにアプリはリポジトリに入らず、4 の webhook を作るときに
+   `OAuthProviderException`（Failed to create webhook）で失敗する。出ていなければ
+   `https://github.com/apps/aws-connector-for-github/installations/new` から、このリポジトリだけに入れる
 
 ## 2. CodeBuild のロール
 
