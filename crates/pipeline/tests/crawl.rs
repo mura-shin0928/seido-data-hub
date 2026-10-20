@@ -371,9 +371,10 @@ async fn a_host_whose_robots_txt_cannot_be_read_is_left_for_the_next_run() {
 
     assert_eq!(pages.load(Ordering::SeqCst), 0);
     let mut rows = Vec::new();
-    for id in ids {
-        rows.push(url_row(&db, id).await);
+    for id in &ids {
+        rows.push(url_row(&db, *id).await);
     }
+    // 状態は変えない（利用者に見えるものは動かさない）
     let waiting: Vec<_> = rows.iter().filter(|r| r.status == "retry_wait").collect();
     assert_eq!(waiting.len(), 1);
     assert_eq!(waiting[0].attempt_count, 1);
@@ -381,6 +382,55 @@ async fn a_host_whose_robots_txt_cannot_be_read_is_left_for_the_next_run() {
     assert_eq!(
         summary.skipped_hosts,
         BTreeSet::from([format!("http://{CITY}")])
+    );
+    // 時刻だけを1日後にそろえ、待ち行列に残さない
+    assert_eq!(summary.postponed, 3);
+    for id in &ids {
+        let days = days_until_next(&db, *id).await;
+        assert!((0.99..=1.01).contains(&days), "1日後にそろう: {days}");
+    }
+}
+
+#[tokio::test]
+async fn only_the_skipped_host_is_postponed() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let fetcher = Arc::new(
+        serve_hosts(
+            &[CITY, TOWN],
+            |host| match host {
+                CITY => reply(503).body(Default::default()).unwrap(),
+                _ => reply(404).body(Default::default()).unwrap(),
+            },
+            |_| page(None),
+        )
+        .await,
+    );
+    let city = register(&db, &url("/a.html")).await;
+    let town = register(&db, &format!("http://{TOWN}/b.html")).await;
+    // 見送るホストの、時刻がまだ3日先の URL は早めない
+    let later = register(&db, &url("/later.html")).await;
+    set_status(&db, later, "queued", "now() + interval '3 days'").await;
+
+    let summary = run_once(&db, &fetcher).await;
+
+    assert_eq!(summary.postponed, 1);
+    let days = days_until_next(&db, city).await;
+    assert!(
+        (0.99..=1.01).contains(&days),
+        "見送ったホストは1日後: {days}"
+    );
+    let days = days_until_next(&db, later).await;
+    assert!(
+        (2.99..=3.01).contains(&days),
+        "先の時刻は動かさない: {days}"
+    );
+    assert_eq!(url_row(&db, town).await.status, "succeeded");
+    let days = days_until_next(&db, town).await;
+    assert!(
+        (6.99..=7.01).contains(&days),
+        "取れたホストは通常の間隔: {days}"
     );
 }
 
