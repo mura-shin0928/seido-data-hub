@@ -838,7 +838,17 @@ async fn a_run_where_robots_txt_cannot_be_read_anywhere_is_recorded_with_an_aler
 
     let (run_id, _, report) = run_recorded_once(&db, &fetcher).await;
 
-    assert_eq!(report.alerts, vec![Alert::AllFailed { fetched: 1 }]);
+    assert_eq!(
+        report.alerts,
+        vec![
+            Alert::AllFailed { fetched: 1 },
+            Alert::HostSkipped {
+                host: format!("http://{CITY}")
+            }
+        ]
+    );
+    // 見送った URL は時刻を先へそろえたので、待ち行列に残らない
+    assert_eq!(report.stats.queue_due, 0);
     let row = crawl_runs::Entity::find_by_id(run_id)
         .one(&db)
         .await

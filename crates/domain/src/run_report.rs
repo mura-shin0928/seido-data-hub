@@ -157,6 +157,10 @@ pub enum Alert {
         responses: u64,
         expected: u64,
     },
+    /// robots.txt が読めず、ホストごと見送った（ホストごとに1件）
+    HostSkipped {
+        host: String,
+    },
 }
 
 /// 率を「100倍して小数1桁＋%」にする
@@ -212,6 +216,10 @@ impl fmt::Display for Alert {
             } => write!(
                 f,
                 "応答が {responses} 件しか無い（{expected} 件以上を見込む。接続先の DB と、時刻の来た URL があるかを確かめる）"
+            ),
+            Alert::HostSkipped { host } => write!(
+                f,
+                "{host} は robots.txt が読めず、ホストごと見送った（接続できない・5xx。残りの URL は1日後に回した）"
             ),
         }
     }
@@ -326,6 +334,13 @@ pub fn alerts(
             lease_expired: c.lease_expired,
             fetched,
         });
+    }
+
+    // 見送りは利用者に見えるものを変えないので、運用側にだけ知らせる（設計の決定51）
+    for (host, h) in &current.hosts {
+        if h.stopped.contains_key("robots_unavailable") {
+            out.push(Alert::HostSkipped { host: host.clone() });
+        }
     }
 
     out
@@ -524,6 +539,24 @@ mod tests {
     const CITY: &str = "http://www.city.example.jp";
 
     #[test]
+    fn a_host_whose_robots_txt_could_not_be_read_raises_an_alert() {
+        let mut skipped = host(&[]);
+        skipped.stopped.insert("robots_unavailable".into(), 1);
+        let s = stats(vec![
+            (CITY, skipped),
+            ("http://ok.example.jp", host(&[(200, 3)])),
+        ]);
+        assert_eq!(
+            alerts(&s, None, &Thresholds::default()),
+            vec![Alert::HostSkipped { host: CITY.into() }]
+        );
+        assert_eq!(
+            Alert::HostSkipped { host: CITY.into() }.to_string(),
+            "http://www.city.example.jp は robots.txt が読めず、ホストごと見送った（接続できない・5xx。残りの URL は1日後に回した）"
+        );
+    }
+
+    #[test]
     fn ratios_are_counted_against_200_and_304() {
         let mut h = host(&[(200, 6), (304, 2), (404, 1)]);
         h.stopped.insert("network:timeout".into(), 1);
@@ -605,7 +638,10 @@ mod tests {
         h.stopped.insert("network:dns".into(), 1);
         assert_eq!(
             alerts(&stats(vec![(CITY, h)]), None, &t),
-            vec![Alert::AllFailed { fetched: 3 }]
+            vec![
+                Alert::AllFailed { fetched: 3 },
+                Alert::HostSkipped { host: CITY.into() }
+            ]
         );
         assert!(alerts(&RunStats::default(), None, &t).is_empty());
         assert!(alerts(&stats(vec![(CITY, host(&[(403, 1)]))]), None, &t).is_empty());
@@ -628,7 +664,7 @@ mod tests {
         );
         assert!(alerts(&stats(vec![(CITY, host(&[(403, 1)]))]), None, &t).is_empty());
 
-        // 見送ったホストだけが残った実行の形: 全件失敗と両方立つ
+        // 見送ったホストだけが残った実行の形: 全件失敗・応答が少ない・見送りの3つが立つ
         let mut h = HostStats::default();
         h.stopped.insert("robots_unavailable".into(), 2);
         assert_eq!(
@@ -638,7 +674,8 @@ mod tests {
                 Alert::TooFewResponses {
                     responses: 0,
                     expected: 1
-                }
+                },
+                Alert::HostSkipped { host: CITY.into() }
             ]
         );
 
