@@ -148,6 +148,8 @@ impl NetworkError {
 
 pub struct Fetcher {
     client: reqwest::Client,
+    /// OpenSSL で繋ぐ client と、それを使うホスト（`host_key`）
+    openssl: Option<(reqwest::Client, BTreeSet<String>)>,
     config: Config,
     allowed_hosts: BTreeSet<String>,
     hosts: StdMutex<HashMap<String, Arc<Host>>>,
@@ -194,12 +196,24 @@ impl Fetcher {
     /// 許可リストは `scheme + ホスト名`（`urls.host_key`）の集合。外への転送は追わない（§6）
     pub fn new(config: Config, allowed_hosts: BTreeSet<String>) -> anyhow::Result<Self> {
         let client = Self::client_builder(&config).build()?;
-        Ok(Self::with_client(client, config, allowed_hosts))
+        let openssl = Self::openssl_client_builder(&config).build()?;
+        let openssl_hosts = fetch::OPENSSL_HOSTS.iter().map(|h| h.to_string()).collect();
+        Ok(Self::with_client(client, config, allowed_hosts).with_openssl(openssl, openssl_hosts))
     }
 
     /// 転送は自分で追うので切る（各段に robots と間隔を掛けるため）。
-    /// テストはここに DNS の上書きを足してから `with_client` に渡す
+    /// テストはここに DNS の上書きを足してから `with_client` に渡す。
+    /// TLS は rustls を明示する（native-tls の feature もあると、reqwest の既定が native-tls に変わるため）
     pub fn client_builder(config: &Config) -> reqwest::ClientBuilder {
+        Self::common_builder(config).tls_backend_rustls()
+    }
+
+    /// `OPENSSL_HOSTS` 向け。設定は `client_builder` と同じで、TLS だけ native-tls（Linux では OpenSSL）
+    pub fn openssl_client_builder(config: &Config) -> reqwest::ClientBuilder {
+        Self::common_builder(config).tls_backend_native()
+    }
+
+    fn common_builder(config: &Config) -> reqwest::ClientBuilder {
         reqwest::Client::builder()
             .user_agent(fetch::USER_AGENT)
             .redirect(reqwest::redirect::Policy::none())
@@ -214,10 +228,17 @@ impl Fetcher {
     ) -> Self {
         Self {
             client,
+            openssl: None,
             config,
             allowed_hosts,
             hosts: StdMutex::new(HashMap::new()),
         }
+    }
+
+    /// `hosts`（`host_key`）へのリクエストだけを `client` で送る
+    pub fn with_openssl(mut self, client: reqwest::Client, hosts: BTreeSet<String>) -> Self {
+        self.openssl = Some((client, hosts));
+        self
     }
 
     /// 1件を取得する。同じホストへの呼び出しが同時に来ても、直列・間隔を空けて送る
@@ -255,7 +276,8 @@ impl Fetcher {
             let target = current.normalized_url.as_str();
             let exchange = match self
                 .gated(&host, async || {
-                    self.exchange(target, validators, Read::Page).await
+                    self.exchange(target, &current.host_key, validators, Read::Page)
+                        .await
                 })
                 .await
             {
@@ -388,8 +410,13 @@ impl Fetcher {
             let target = prepared.normalized_url.as_str();
             let exchange = match self
                 .gated(&host, async || {
-                    self.exchange(target, &Validators::default(), Read::Robots)
-                        .await
+                    self.exchange(
+                        target,
+                        &prepared.host_key,
+                        &Validators::default(),
+                        Read::Robots,
+                    )
+                    .await
                 })
                 .await
             {
@@ -426,14 +453,20 @@ impl Fetcher {
         Robots::AllowAll
     }
 
+    /// 1リクエストを送る。client は、そのリクエストの `host_key` で選ぶ（転送の各段で選び直す）
     async fn exchange(
         &self,
         url: &str,
+        host_key: &str,
         validators: &Validators,
         read: Read,
     ) -> Result<Exchange, reqwest::Error> {
         let started = Instant::now();
-        let mut request = self.client.get(url);
+        let client = match &self.openssl {
+            Some((client, hosts)) if hosts.contains(host_key) => client,
+            _ => &self.client,
+        };
+        let mut request = client.get(url);
         if let Some(etag) = &validators.etag {
             request = request.header(header::IF_NONE_MATCH, etag);
         }

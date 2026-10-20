@@ -85,6 +85,40 @@ async fn serve(
     config: Config,
     respond: impl Fn(&str, &str, &HeaderMap) -> HttpResponse + Send + Sync + 'static,
 ) -> (Fetcher, Site) {
+    let (site, addr) = start(respond).await;
+    let client = resolving(Fetcher::client_builder(&config), addr)
+        .build()
+        .unwrap();
+    (Fetcher::with_client(client, config, allowed()), site)
+}
+
+/// `serve` と同じサーバーに、`openssl_host` へのリクエストだけを2つ目の client で送る `Fetcher` を向ける。
+/// 2つ目の client は目印のヘッダ（`x-test-client: openssl`）を付けるので、どちらで送ったかをサーバーで見分けられる
+async fn serve_with_openssl_for(
+    openssl_host: &str,
+    config: Config,
+    respond: impl Fn(&str, &str, &HeaderMap) -> HttpResponse + Send + Sync + 'static,
+) -> (Fetcher, Site) {
+    let (site, addr) = start(respond).await;
+    let client = resolving(Fetcher::client_builder(&config), addr)
+        .build()
+        .unwrap();
+    let marked = HeaderMap::from_iter([(
+        header::HeaderName::from_static("x-test-client"),
+        header::HeaderValue::from_static("openssl"),
+    )]);
+    let openssl = resolving(Fetcher::client_builder(&config), addr)
+        .default_headers(marked)
+        .build()
+        .unwrap();
+    let fetcher = Fetcher::with_client(client, config, allowed())
+        .with_openssl(openssl, BTreeSet::from([format!("http://{openssl_host}")]));
+    (fetcher, site)
+}
+
+async fn start(
+    respond: impl Fn(&str, &str, &HeaderMap) -> HttpResponse + Send + Sync + 'static,
+) -> (Site, SocketAddr) {
     let site = Site {
         respond: Arc::new(respond),
         seen: Arc::default(),
@@ -93,16 +127,19 @@ async fn serve(
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (site, addr)
+}
 
-    let client = [CITY, TOWN, OTHER]
+/// CITY・TOWN・OTHER をテスト用サーバーへ向ける
+fn resolving(builder: reqwest::ClientBuilder, addr: SocketAddr) -> reqwest::ClientBuilder {
+    [CITY, TOWN, OTHER]
         .into_iter()
-        .fold(Fetcher::client_builder(&config), |builder, host| {
-            builder.resolve(host, addr)
-        })
-        .build()
-        .unwrap();
-    let allowed = BTreeSet::from([format!("http://{CITY}"), format!("http://{TOWN}")]);
-    (Fetcher::with_client(client, config, allowed), site)
+        .fold(builder, |builder, host| builder.resolve(host, addr))
+}
+
+/// 許可リストは CITY と TOWN
+fn allowed() -> BTreeSet<String> {
+    BTreeSet::from([format!("http://{CITY}"), format!("http://{TOWN}")])
 }
 
 /// 間隔の確認以外は、待ち時間を縮めて速く流す
@@ -563,4 +600,37 @@ async fn our_name_is_sent_as_the_user_agent() {
     for seen in site.seen() {
         assert_eq!(seen.headers[header::USER_AGENT], domain::fetch::USER_AGENT);
     }
+}
+
+#[tokio::test]
+async fn requests_to_an_openssl_host_use_the_openssl_client() {
+    // CITY のページは TOWN へ転送する。robots.txt はどちらも 404
+    let (fetcher, site) =
+        serve_with_openssl_for(TOWN, quick(), |host, path, _| match (host, path) {
+            (CITY, "/a.html") => redirect(301, &format!("http://{TOWN}/b.html")),
+            (_, "/robots.txt") => empty(404),
+            _ => html("<p>ok</p>"),
+        })
+        .await;
+
+    get(&fetcher, &format!("http://{CITY}/a.html")).await;
+
+    let marked = |s: &Seen| s.headers.get("x-test-client").is_some();
+    let seen = site.seen();
+    // TOWN へは robots.txt も転送先のページも目印付き、CITY へは目印なし
+    assert_eq!(seen.iter().filter(|s| s.host == TOWN).count(), 2);
+    assert!(seen.iter().filter(|s| s.host == TOWN).all(marked));
+    assert_eq!(seen.iter().filter(|s| s.host == CITY).count(), 2);
+    assert!(seen.iter().filter(|s| s.host == CITY).all(|s| !marked(s)));
+}
+
+#[tokio::test]
+#[ignore = "町田市の子育てサイトに実際に繋ぐ。Linux（OpenSSL）で手で流す"]
+async fn the_machida_kosodate_site_is_reachable_only_through_openssl() {
+    let config = Config::default();
+    let robots = "https://kosodate-machida.tokyo.jp/robots.txt";
+    let rustls = Fetcher::client_builder(&config).build().unwrap();
+    assert!(rustls.get(robots).send().await.is_err());
+    let openssl = Fetcher::openssl_client_builder(&config).build().unwrap();
+    assert!(openssl.get(robots).send().await.is_ok());
 }
