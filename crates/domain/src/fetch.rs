@@ -13,6 +13,11 @@ pub const USER_AGENT: &str =
 /// robots.txt の `User-agent` と照らす名前
 pub const ROBOTS_AGENT: &str = "seido-data-hub";
 
+/// rustls ではなく OpenSSL で繋ぐホスト（`urls.host_key`）。
+/// 町田市の子育てサイトは TLS 1.2 で鍵交換が DHE と静的 RSA だけで、rustls はどちらも持たないので繋がらない。
+/// OpenSSL の既定のまま、ffdhe2048 を申告して DHE 2048 ビットで繋がる（安全の基準は下げない。設計の決定50）
+pub const OPENSSL_HOSTS: &[&str] = &["https://kosodate-machida.tokyo.jp"];
+
 /// 同じホストへの最短の間隔（前の応答を受け取り終えてから次を送るまで）
 pub const MIN_INTERVAL: Duration = Duration::from_secs(2);
 

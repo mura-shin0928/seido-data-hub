@@ -77,6 +77,11 @@ pub struct Policy {
     pub blocked: Bounds,
     /// `FailedFinal` の再評価までの間隔
     pub failed_final_interval: Duration,
+    /// robots.txt が読めずホストごと見送ったとき、そのホストの残りの URL を回す先（実行の終わりからの間隔）。
+    /// 仮置き: robots.txt のキャッシュ（1日。§19・§26-2）に合わせた。週1の定期実行では、次の実行で必ず候補になる。
+    /// `shortest_interval` には入れない（入れると先取り48時間の実行が始まらなくなる。
+    /// ずらすのは実行の終わりなので、同じ実行の中で取り直すことは無い）
+    pub skipped_host_interval: Duration,
     /// 本文を最後に読んでからこれだけ経ったら、条件付きヘッダを付けずに取る。
     /// PDF の間隔（14〜90日）はこの判定とほぼ同じか長いので、PDF はたいてい毎回 validator を付けずに取る
     /// （生きている PDF は少ないので受け入れる）
@@ -95,6 +100,7 @@ impl Default for Policy {
             deletion_candidate: Bounds::days(7, 3, 7),
             blocked: Bounds::days(7, 7, 30),
             failed_final_interval: 7 * DAY,
+            skipped_host_interval: DAY,
             full_fetch_every: 28 * DAY,
         }
     }

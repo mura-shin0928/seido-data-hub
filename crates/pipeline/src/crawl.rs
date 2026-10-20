@@ -83,6 +83,8 @@ pub struct Summary {
     pub retries: usize,
     /// lease の切れた行を claim し直した数
     pub lease_expired: usize,
+    /// 見送ったホストの URL のうち、実行の終わりに時刻を先へそろえた数
+    pub postponed: u64,
 }
 
 /// 実行の設定の控え（`crawl_runs.config`）
@@ -119,7 +121,8 @@ struct Done {
 /// - 同時に `concurrency` 件まで、ホストごとに1件
 /// - この実行で取った資源・いま取得中の資源に結ばれている URL は、取った URL 自身を除いて候補から外す
 ///   （資源は実行あたり1回。取った URL の再試行は続ける。再試行の判定は観測を持たないので、見つからない観測は二重に進まない）
-/// - robots.txt が読めないホスト（転送先で読めなかったときは claim したホストも）は、この実行の残りでは claim しない
+/// - robots.txt が読めないホスト（転送先で読めなかったときは claim したホストも）は、この実行の残りでは claim しない。
+///   実行の終わりに、そのホストの URL の時刻を `skipped_host_interval` 後にそろえ、待ち行列に残さない（状態は変えない）
 /// - 取得中が無く候補も無いとき、近い再試行（`longest_retry_wait` 以内）があればそこまで待ち、無ければ終わる
 /// - 記録が失敗したら残りを止めてエラーを返す。取得中だった行は lease が切れて次の実行で回収される
 /// - 先取りの幅が最短の間隔以上なら、始めずにエラーを返す（取った直後の URL がまた候補になり、取り続けるため）
@@ -268,6 +271,12 @@ pub async fn run(
             }
         }
     }
+    summary.postponed = claim::postpone_hosts(
+        db,
+        &summary.skipped_hosts,
+        config.policy.skipped_host_interval,
+    )
+    .await?;
     Ok(summary)
 }
 

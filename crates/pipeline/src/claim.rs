@@ -235,6 +235,30 @@ pub async fn next_retry_in(
     Ok(secs.map(|secs| Duration::from_secs_f64(secs.max(0.0))))
 }
 
+/// ホストごと見送った `hosts` の URL の時刻を `now + after` にそろえ、書き換えた行数を返す。
+/// それより先の時刻の行と `processing` の行（lease を持つ取得）には触らない。状態も変えない
+pub async fn postpone_hosts(
+    db: &impl ConnectionTrait,
+    hosts: &BTreeSet<String>,
+    after: Duration,
+) -> anyhow::Result<u64> {
+    if hosts.is_empty() {
+        return Ok(0);
+    }
+    let hosts: Vec<String> = hosts.iter().cloned().collect();
+    let result = db
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "UPDATE urls SET next_crawl_at = now() + make_interval(secs => $2) \
+             WHERE host_key = ANY($1) AND status <> 'processing' \
+               AND next_crawl_at < now() + make_interval(secs => $2)",
+            [hosts.into(), after.as_secs_f64().into()],
+        ))
+        .await
+        .context("見送ったホストの時刻をずらせない")?;
+    Ok(result.rows_affected())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
