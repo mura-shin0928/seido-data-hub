@@ -3,7 +3,8 @@
 //! 巡回の前に流す。前回の巡回で主たる URL が消えた（`deleted`・`deletion_candidate`）制度について、
 //! レジストリの行から取り出した関連 URL を `urls` に登録して結ぶ。続く巡回がそれを取る。
 //!
-//! 死んだ制度の `role = 'related'` は毎回作り直す。生き返った制度（主たる URL がまた `active`）の結び付きは
+//! 死んだ制度の、レジストリ由来（`source = 'registry'`）の `role = 'related'` は毎回作り直す。
+//! 人の判定で足した関連リンク（`source = 'discovered'`）は残す。生き返った制度（主たる URL がまた `active`）の結び付きは
 //! 消さない（触るのは死んでいる制度だけ。関連 URL は一度結んだら案内として残す）。
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -152,6 +153,7 @@ pub async fn link(db: &DatabaseConnection) -> anyhow::Result<Counts> {
     for chunk in survey.dead_programs.chunks(CHUNK) {
         program_urls::Entity::delete_many()
             .filter(program_urls::Column::Role.eq("related"))
+            .filter(program_urls::Column::Source.eq("registry"))
             .filter(program_urls::Column::ProgramId.is_in(chunk.iter().copied()))
             .exec(&txn)
             .await
@@ -187,8 +189,14 @@ pub async fn link(db: &DatabaseConnection) -> anyhow::Result<Counts> {
             })
         })
         .collect::<anyhow::Result<_>>()?;
+    // 人の判定で同じ URL を既に結んだ制度では、その行（discovered）を残す
     for chunk in rows.chunks(CHUNK) {
         program_urls::Entity::insert_many(chunk.to_vec())
+            .on_conflict(
+                OnConflict::columns([program_urls::Column::ProgramId, program_urls::Column::UrlId])
+                    .do_nothing()
+                    .to_owned(),
+            )
             .exec_without_returning(&txn)
             .await
             .context("program_urls を書けない")?;
