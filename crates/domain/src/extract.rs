@@ -23,7 +23,7 @@ use crate::urls;
 ///
 /// - 2: 本文コンテナの中の aside も除く（閲覧の多いページの一覧が日ごとに変わるため）
 /// - 3: id/class に localnavi を含む要素（サブナビゲーション）も除く
-/// - 4: id/class に lobgbox を含む要素（サイドの箱）も除く
+/// - 4: id/class に lobgbox を含む要素（サイドの箱）も除く。本文が空の要素とリンク（a）は本文コンテナにしない
 pub const EXTRACTOR_VERSION: i32 = 4;
 
 /// 画面に出ない要素。本文からもページ全体からも除く
@@ -220,8 +220,9 @@ pub fn extract(html: &str, url: &str) -> Extracted {
 
 /// 規則を上から試し、最初に見つかった要素を本文コンテナにする。
 ///
-/// 同じ規則に当たる要素が複数あれば文書順で最初（入れ子なら外側）。除去する要素（nav など）と
-/// その中は候補にしない（取り出した後で除くと空になるため）
+/// 同じ規則に当たる要素が複数あれば、取り出した本文が空でない文書順で最初のもの（入れ子なら外側）。
+/// 空しか無ければ次の規則へ進む（チャットボットの空の iframe が content に当たる新宿区など）。
+/// 除去する要素（nav など）とその中は候補にしない（取り出した後で除くと空になるため）
 fn container(body: ElementRef<'_>) -> (Rule, ElementRef<'_>) {
     let mut candidates = Vec::new();
     collect(body, &mut candidates);
@@ -230,20 +231,34 @@ fn container(body: ElementRef<'_>) -> (Rule, ElementRef<'_>) {
         .find_map(|rule| {
             candidates
                 .iter()
-                .find(|e| rule.matches(e.value()))
+                .filter(|e| rule.matches(e.value()))
+                .find(|e| !body_text_of(**e).is_empty())
                 .map(|e| (rule, *e))
         })
         .unwrap_or((Rule::Body, body))
 }
 
+/// リンク（`<a>`）は候補にしないが、その中は辿る。「本文へ」の飛び先の印（`<a id="honbun">`）が
+/// 規則に当たるため（羽村市・府中市の図書館）
 fn collect<'a>(parent: ElementRef<'a>, out: &mut Vec<ElementRef<'a>>) {
     for child in parent.children().filter_map(ElementRef::wrap) {
         if is(child.value(), &HIDDEN) || is_chrome(child.value()) {
             continue;
         }
-        out.push(child);
+        if child.value().name() != "a" {
+            out.push(child);
+        }
         collect(child, out);
     }
+}
+
+/// 本文コンテナにしたときの本文（正規化済み）
+fn body_text_of(container: ElementRef<'_>) -> String {
+    normalize(&text(
+        container,
+        &|e| is(e, &HIDDEN) || is_chrome(e),
+        &mut |_| {},
+    ))
 }
 
 /// 本文から除く枠の要素か（`CHROME` の要素、または id/class に `CHROME_MARKS` の語を含む要素）
@@ -519,6 +534,45 @@ mod tests {
         // 同じ規則なら文書順で最初（入れ子なら外側）
         let body = r#"<div id="contents"><div class="content-body"><p>児童手当</p></div><p>関連</p></div>"#;
         assert_eq!(rule_of(body), (Rule::Content, "児童手当\n関連".to_string()));
+    }
+
+    #[test]
+    fn empty_candidates_are_skipped() {
+        // 新宿区の形: content に最初に当たるのは中身の無いチャットボットの iframe
+        let body = chrome(
+            r#"<iframe class="chatbot-content"></iframe><div id="contentSection"><p>児童手当</p></div>"#,
+        );
+        assert_eq!(rule_of(&body), (Rule::Content, "児童手当".to_string()));
+
+        // 空の候補の後ろに空でない候補があれば、入れ子でも外側を選ぶ振る舞いは変わらない
+        let body = r#"<div class="content-skip"></div><div id="contents"><div class="content-body"><p>児童手当</p></div><p>関連</p></div>"#;
+        assert_eq!(rule_of(body), (Rule::Content, "児童手当\n関連".to_string()));
+
+        // 当たる要素がすべて空なら次の規則へ
+        let body = r#"<div id="main-visual"></div><div class="content"><p>児童手当</p></div>"#;
+        assert_eq!(rule_of(body), (Rule::Content, "児童手当".to_string()));
+    }
+
+    #[test]
+    fn links_are_not_candidates() {
+        // 羽村市の形: 「本文へ」の飛び先の空のリンクが honbun に当たる。本文はどの規則にも当たらない
+        let body = chrome(
+            r#"<a id="HONBUN" class="anchor"></a><div class="main_naka"><p>児童手当</p></div>"#,
+        );
+        assert_eq!(rule_of(&body), (Rule::Body, "児童手当".to_string()));
+
+        // 府中市の図書館の形: 飛び先のリンクに文字があっても本文コンテナにしない
+        let body = chrome(
+            r#"<p class="skip"><a name="honbun" id="honbun">ここから本文です。</a></p><div class="mainbody"><p>児童手当</p></div>"#,
+        );
+        assert_eq!(
+            rule_of(&body),
+            (Rule::Body, "ここから本文です。\n児童手当".to_string())
+        );
+
+        // リンクの中の要素は候補のまま
+        let body = r#"<a href="/x.html"><div class="content"><p>児童手当</p></div></a>"#;
+        assert_eq!(rule_of(body), (Rule::Content, "児童手当".to_string()));
     }
 
     #[test]
@@ -802,7 +856,10 @@ mod tests {
         let monday = at("9か月児健康診査", "緊急メンテナンスのお知らせ");
         let tuesday = at("乳幼児の事故防止", "インフルエンザが流行しています");
         assert_eq!(monday.rule, Rule::Body);
-        assert_eq!(monday.body_text, "多胎児家庭の交流会\n双子や三つ子のつどいです。");
+        assert_eq!(
+            monday.body_text,
+            "多胎児家庭の交流会\n双子や三つ子のつどいです。"
+        );
         assert_eq!(monday.hashes.body, tuesday.hashes.body);
         // 箱の中のリンクは本文のリンクにも入れない
         assert!(monday.links.is_empty());
