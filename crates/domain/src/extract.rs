@@ -1,7 +1,7 @@
 //! 取得した HTML から本文を取り出し、変化を比べるためのハッシュを作る（§16 §19 §20）。
 //!
 //! ```text
-//! HTML → 本文コンテナの抽出 → script/style/nav/header/footer/aside/localnavi/コメント除去
+//! HTML → 本文コンテナの抽出 → script/style/nav/header/footer/aside/localnavi/lobgbox/コメント除去
 //!      → 空白・Unicode（NFKC）正規化 → ハッシュ
 //! ```
 
@@ -23,7 +23,8 @@ use crate::urls;
 ///
 /// - 2: 本文コンテナの中の aside も除く（閲覧の多いページの一覧が日ごとに変わるため）
 /// - 3: id/class に localnavi を含む要素（サブナビゲーション）も除く
-pub const EXTRACTOR_VERSION: i32 = 3;
+/// - 4: id/class に lobgbox を含む要素（サイドの箱）も除く
+pub const EXTRACTOR_VERSION: i32 = 4;
 
 /// 画面に出ない要素。本文からもページ全体からも除く
 const HIDDEN: [&str; 4] = ["script", "style", "noscript", "template"];
@@ -33,8 +34,10 @@ const CHROME: [&str; 4] = ["nav", "header", "footer", "aside"];
 
 /// id か class にこの語を含む要素も `CHROME` と同じく除く（大文字小文字は区別しない）。
 /// `localnavi` はページ内のサブナビゲーション。閲覧の多いページ・類似ページの一覧が日ごとに変わる
-/// （中野区・墨田区で実測）
-const CHROME_MARKS: [&str; 1] = ["localnavi"];
+/// （中野区・墨田区で実測）。
+/// `lobgbox` はサイドの箱（閲覧の多いページ・類似ページ・注目情報・同じ階層の一覧）。
+/// 練馬区では `localnavi` の外にあり、本文の後ろに並ぶ
+const CHROME_MARKS: [&str; 2] = ["localnavi", "lobgbox"];
 
 /// 前後で行を分ける要素。インライン要素（`<b>` など）では分けない（「子<b>育</b>て」を割らないため）
 const BLOCKS: [&str; 39] = [
@@ -775,6 +778,34 @@ mod tests {
         // 一覧のリンクは本文のリンクにも入れない
         assert!(monday.links.is_empty());
         assert_eq!(monday.hashes.links, tuesday.hashes.links);
+    }
+
+    #[test]
+    fn side_boxes_are_removed_even_without_a_container() {
+        // 練馬区の形: main も枠の要素も無く body になる。本文の後ろに日ごとに変わる一覧の箱が並ぶ
+        let at = |viewed: &str, notice: &str| {
+            extract(
+                &page(
+                    "",
+                    &format!(
+                        "<div id=\"wrap\"><h1>多胎児家庭の交流会</h1><p>双子や三つ子のつどいです。</p>\
+                         <div class=\"lobgbox losubnavi\"><ul><li><a href=\"/a.html\">4か月児健康診査</a></li></ul></div>\
+                         <div class=\"lobgbox lochumoku\"><h2>注目情報</h2><ul><li>{notice}</li></ul></div>\
+                         <div class=\"lobgbox lorecommend\"><h2>このページを見ている人はこんなページも見ています</h2>\
+                         <ul><li><a href=\"/b.html\">{viewed}</a></li></ul></div>\
+                         <div class=\"lobgbox losimilarpage\"><h2>類似ページ</h2><ul><li>{viewed}</li></ul></div></div>"
+                    ),
+                ),
+                URL,
+            )
+        };
+        let monday = at("9か月児健康診査", "緊急メンテナンスのお知らせ");
+        let tuesday = at("乳幼児の事故防止", "インフルエンザが流行しています");
+        assert_eq!(monday.rule, Rule::Body);
+        assert_eq!(monday.body_text, "多胎児家庭の交流会\n双子や三つ子のつどいです。");
+        assert_eq!(monday.hashes.body, tuesday.hashes.body);
+        // 箱の中のリンクは本文のリンクにも入れない
+        assert!(monday.links.is_empty());
     }
 
     #[test]
