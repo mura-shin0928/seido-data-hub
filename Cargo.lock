@@ -2466,10 +2466,12 @@ dependencies = [
  "migration",
  "reqwest",
  "sea-orm",
+ "serde",
  "serde_json",
  "texting_robots",
  "tokio",
  "url",
+ "uuid",
 ]
 
 [[package]]
