@@ -63,11 +63,14 @@ pub fn parse(json: &str) -> anyhow::Result<ReviewFile> {
                 errors.push(format!("{id}: {:?} に url が無い", review.verdict))
             }
             (Verdict::None, Some(_)) => errors.push(format!("{id}: none に url がある")),
-            (_, Some(url)) => {
-                if let Err(e) = prepare(url) {
-                    errors.push(format!("{id}: url を読めない（{e}）: {url:?}"));
+            (_, Some(url)) => match (prepare(url), prepare(&review.dead_url)) {
+                (Err(e), _) => errors.push(format!("{id}: url を読めない（{e}）: {url:?}")),
+                // 候補は元の URL と同じホストに限る。別のホストを入れると、そのホストが巡回の許可リストに加わる
+                (Ok(candidate), Ok(dead)) if candidate.host_key != dead.host_key => {
+                    errors.push(format!("{id}: url のホストが dead_url と違う: {url:?}"))
                 }
-            }
+                _ => {}
+            },
             (Verdict::None, None) => {}
         }
         if let Err(e) = prepare(&review.dead_url) {
@@ -333,14 +336,19 @@ async fn link_one(
             if target.moved_to == Some(main.id) {
                 return refused(RefuseReason::Cycle);
             }
-            txn.execute_raw(Statement::from_sql_and_values(
-                DbBackend::Postgres,
-                "UPDATE resources SET state = 'moved', moved_to_resource_id = $1, updated_at = now() \
-                 WHERE id = $2",
-                [target.id.into(), main.id.into()],
-            ))
-            .await
-            .context("資源を moved にできない")?;
+            // 読んでから書くまでに巡回が生き返らせていたら書かない（同じ実行の外で流れた巡回との競合）
+            let updated = txn
+                .execute_raw(Statement::from_sql_and_values(
+                    DbBackend::Postgres,
+                    "UPDATE resources SET state = 'moved', moved_to_resource_id = $1, updated_at = now() \
+                     WHERE id = $2 AND state IN ('deleted', 'deletion_candidate')",
+                    [target.id.into(), main.id.into()],
+                ))
+                .await
+                .context("資源を moved にできない")?;
+            if updated.rows_affected() == 0 {
+                return refused(RefuseReason::MainNotDead("changed".to_string()));
+            }
             Ok(Linked::Moved)
         }
         Verdict::Index => {

@@ -40,6 +40,9 @@ jobs:
       - run: cargo build --release -p pipeline
       - run: ./target/release/pipeline apply-reviews register "$FILE" $DRY_RUN
       # 登録したばかりの候補を取る。週の途中なら、ほかの URL はほとんど時刻が来ていない。試し流しでは取らない
-      - if: ${{ !inputs.dry_run }}
+      - id: crawl
+        if: ${{ !inputs.dry_run }}
         run: ./target/release/pipeline crawl --kind reviews
-      - run: ./target/release/pipeline apply-reviews link "$FILE" $DRY_RUN
+      # 巡回が警告（全件失敗・429 の急増など）で失敗しても結び付けは流す。結ぶのは資源が active になった候補だけ
+      - if: ${{ success() || steps.crawl.conclusion == 'failure' }}
+        run: ./target/release/pipeline apply-reviews link "$FILE" $DRY_RUN

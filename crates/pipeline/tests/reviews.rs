@@ -495,3 +495,17 @@ async fn link_dry_run_writes_nothing() {
         ("deletion_candidate".to_string(), None)
     );
 }
+
+#[test]
+fn parse_rejects_candidate_on_another_host() {
+    let id = "00000000-0000-0000-0000-000000000009";
+    let json = serde_json::json!({
+        "reviewed_at": "2026-10-28",
+        "reviews": [
+            { "program_id": id, "dead_url": "https://www.city.example.jp/old.html",
+              "verdict": "hit", "url": "https://www.town.example.jp/new.html" },
+        ]
+    });
+    let err = parse(&json.to_string()).unwrap_err().to_string();
+    assert!(err.contains(id) && err.contains("ホスト"), "{err}");
+}
