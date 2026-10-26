@@ -509,3 +509,32 @@ fn parse_rejects_candidate_on_another_host() {
     let err = parse(&json.to_string()).unwrap_err().to_string();
     assert!(err.contains(id) && err.contains("ホスト"), "{err}");
 }
+
+#[tokio::test]
+async fn dry_run_counts_match_the_real_run_on_shared_resource() {
+    let Some((db, _guard)) = common::fresh_db().await else {
+        return;
+    };
+    let programs = setup(&db).await;
+    db.execute_raw(Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "update program_urls set url_id = $1 where program_id = $2 and role = 'main'",
+        [programs[0].main_url_id.into(), programs[1].id.into()],
+    ))
+    .await
+    .unwrap();
+    let old = dead_main(&db, &programs[0], "deleted").await;
+    candidate(&db, HIT, "active").await;
+    candidate(&db, LIST, "active").await;
+    let mut second = review(&programs[1], "hit", Some(LIST));
+    second["dead_url"] = programs[0].main_url.clone().into();
+    let f = file(vec![review(&programs[0], "hit", Some(HIT)), second]);
+    // 試し流しでも、前の判定の結果を見て次を決める（本番と同じ件数になる）
+    let report = link(&db, &f, true).await.unwrap();
+    assert_eq!(report.moved, 1);
+    assert_eq!(
+        report.refused[0].reason,
+        RefuseReason::MainNotDead("moved".to_string())
+    );
+    assert_eq!(state_of(&db, old).await, ("deleted".to_string(), None));
+}

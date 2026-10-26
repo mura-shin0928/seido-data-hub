@@ -14,8 +14,8 @@ use domain::urls::{PreparedUrl, prepare};
 use entity::{program_urls, urls as urls_table};
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{
-    ActiveValue::Set, ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbBackend, DbErr,
-    EntityTrait, Statement, TransactionTrait, prelude::Uuid,
+    ActiveValue::Set, ConnectionTrait, DatabaseConnection, DbBackend, DbErr, EntityTrait,
+    Statement, TransactionSession, TransactionTrait, prelude::Uuid,
 };
 use serde::Deserialize;
 
@@ -206,37 +206,61 @@ pub async fn link(
     dry_run: bool,
 ) -> anyhow::Result<LinkReport> {
     let mut report = LinkReport::default();
+    if dry_run {
+        // 試し流しは全体を1つのトランザクションにし、1件ごとはセーブポイントにする。
+        // 前の判定の結果を見て次を決めるので、本番と同じ件数になる。最後にすべて戻す
+        let outer = db.begin().await?;
+        link_all(&outer, file, &mut report).await?;
+        outer.rollback().await?;
+    } else {
+        link_all(db, file, &mut report).await?;
+    }
+    Ok(report)
+}
+
+async fn link_all<C: TransactionTrait>(
+    db: &C,
+    file: &ReviewFile,
+    report: &mut LinkReport,
+) -> anyhow::Result<()> {
     for review in &file.reviews {
         let Some(url) = candidate_of(review)? else {
             report.none += 1;
             continue;
         };
-        let txn = db.begin().await?;
-        match link_one(&txn, review, &url).await {
-            Ok(linked) => {
-                match linked {
-                    Linked::Moved => report.moved += 1,
-                    Linked::Related => report.related += 1,
-                    Linked::Already => report.already += 1,
-                    Linked::Refused(reason) => report.refused.push(Refusal {
-                        program_id: review.program_id,
-                        url: url.normalized_url.clone(),
-                        reason,
-                    }),
-                }
-                if dry_run {
-                    txn.rollback().await?;
-                } else {
-                    txn.commit().await?;
-                }
-            }
-            Err(e) => {
-                txn.rollback().await?;
-                report.failed.push((review.program_id, format!("{e:#}")));
-            }
+        // 始める・確定するところの失敗も、その件の失敗として積んで続ける（それまでに結んだ件の報告を残すため）
+        match link_in_txn(db, review, &url).await {
+            Ok(Linked::Moved) => report.moved += 1,
+            Ok(Linked::Related) => report.related += 1,
+            Ok(Linked::Already) => report.already += 1,
+            Ok(Linked::Refused(reason)) => report.refused.push(Refusal {
+                program_id: review.program_id,
+                url: url.normalized_url.clone(),
+                reason,
+            }),
+            Err(e) => report.failed.push((review.program_id, format!("{e:#}"))),
         }
     }
-    Ok(report)
+    Ok(())
+}
+
+async fn link_in_txn<C: TransactionTrait>(
+    db: &C,
+    review: &Review,
+    url: &PreparedUrl,
+) -> anyhow::Result<Linked> {
+    let txn = db.begin().await?;
+    match link_one(&txn, review, url).await {
+        Ok(linked) => {
+            txn.commit().await?;
+            Ok(linked)
+        }
+        Err(e) => {
+            // 戻せなかったときも、元の失敗の方を報告する（トランザクションは捨てれば戻る）
+            let _ = txn.rollback().await;
+            Err(e)
+        }
+    }
 }
 
 fn candidate_of(review: &Review) -> anyhow::Result<Option<PreparedUrl>> {
@@ -254,7 +278,7 @@ struct Current {
     moved_to: Option<Uuid>,
 }
 
-async fn current(txn: &DatabaseTransaction, url_id: Uuid) -> Result<Option<Current>, DbErr> {
+async fn current(txn: &impl ConnectionTrait, url_id: Uuid) -> Result<Option<Current>, DbErr> {
     let row = txn
         .query_one_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
@@ -275,7 +299,7 @@ async fn current(txn: &DatabaseTransaction, url_id: Uuid) -> Result<Option<Curre
 }
 
 async fn link_one(
-    txn: &DatabaseTransaction,
+    txn: &impl ConnectionTrait,
     review: &Review,
     url: &PreparedUrl,
 ) -> anyhow::Result<Linked> {
