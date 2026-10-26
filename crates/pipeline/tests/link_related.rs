@@ -317,7 +317,11 @@ async fn registry_candidate_already_linked_as_discovered_is_kept() {
     main_resource(&db, 0, "deleted").await;
     link(&db).await.unwrap();
     // レジストリの関連 URL のうち1件を、人の判定で足した行（discovered）に置き換える
-    let (url, _) = related_of(&db, 0).await.into_iter().next().expect("関連 URL がある");
+    let (url, _) = related_of(&db, 0)
+        .await
+        .into_iter()
+        .next()
+        .expect("関連 URL がある");
     db.execute_raw(Statement::from_sql_and_values(
         db.get_database_backend(),
         "update program_urls set source = 'discovered', rank = 9 \
