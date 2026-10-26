@@ -93,15 +93,15 @@ cargo run -p pipeline -- link-related
 終わりに、死んだ制度・候補のある制度・結び付き・新規と既存の URL の件数を出し、候補にしなかった URL があれば理由ごとの件数も出す。
 人の判定で足した関連リンク（`source = 'discovered'`）は作り直さずに残す。
 
-人が判定した移転先（`data/reviews/*.json`）を結ぶ（`register` で候補の URL を登録し、`crawl` で取ってから `link` で結ぶ）:
+人が判定した移転先（`data/reviews/*.json`）を DB に反映する（`register` で候補の URL を登録し、`crawl` で取ってから `link` で反映する）:
 
 ```bash
 cargo run -p pipeline -- apply-reviews register data/reviews/2026-10-moves.json --dry-run
 cargo run -p pipeline -- apply-reviews link data/reviews/2026-10-moves.json --dry-run
 ```
 
-`hit` は元の URL の資源を `moved` にして候補の資源へ向け、`index` は候補を関連リンク（`discovered`）として結び、`none` は何もしない。
-`--dry-run` は同じ処理を流してロールバックし、件数だけ出す。本番では GitHub Actions の `Apply reviews` を手で流す（[docs/apply-reviews.md](docs/apply-reviews.md)）。
+`hit` は元の URL の資源を `moved` にして候補の資源へ向け、`index` は候補を関連リンク（`discovered`）として加え、`none` は何もしない。
+`--dry-run` は DB には書かず、件数だけを表示する。本番では GitHub Actions の `Apply reviews` を手で流す（[docs/apply-reviews.md](docs/apply-reviews.md)）。
 
 終わりに実行サマリー（ホスト別の status・304 の割合・変更率・404 など）を出し、`crawl_runs` の `stats`・`alerts` にも残す。
 Actions では `GITHUB_STEP_SUMMARY` に追記する。429・5xx の急増・全件失敗・変更率50%超・lease 切れの多発・応答の下限（`--min-responses`）に当たったら、

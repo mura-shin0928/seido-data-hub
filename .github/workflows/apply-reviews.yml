@@ -1,7 +1,7 @@
 name: Apply reviews
 
-# 人が判定した移転先（data/reviews/*.json）を本番（Supabase）に結ぶ。手で流す。
-# 候補の URL を登録し、巡回で取ってから、資源が active なものだけを結ぶ。流し方は docs/apply-reviews.md
+# 人が判定した移転先（data/reviews/*.json）を本番（Supabase）の DB に反映する。手で流す。
+# 候補の URL を登録して巡回で取り、資源が active になった候補だけを反映する。流し方は docs/apply-reviews.md
 on:
   workflow_dispatch:
     inputs:
@@ -10,7 +10,7 @@ on:
         default: data/reviews/2026-10-moves.json
         required: true
       dry_run:
-        description: 書かずに、何をするかを数えて出す
+        description: DB には書かず、件数だけを表示する
         type: boolean
         default: true
 
@@ -43,6 +43,6 @@ jobs:
       - id: crawl
         if: ${{ !inputs.dry_run }}
         run: ./target/release/pipeline crawl --kind reviews
-      # 巡回が警告（全件失敗・429 の急増など）で失敗しても結び付けは流す。結ぶのは資源が active になった候補だけ
+      # 巡回が警告（全件失敗・429 の急増など）で失敗しても、反映は流す。反映するのは資源が active になった候補だけ
       - if: ${{ success() || steps.crawl.conclusion == 'failure' }}
         run: ./target/release/pipeline apply-reviews link "$FILE" $DRY_RUN

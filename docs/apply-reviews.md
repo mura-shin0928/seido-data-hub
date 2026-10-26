@@ -1,21 +1,21 @@
-# 人が判定した移転先を結ぶ
+# 人が判定した移転先を反映する
 
 ## 何をするか
 
 family-app の一覧から外している制度（主たる URL を開けず、生きた関連リンクも無い市区町村の制度）のうち、
-移転先を人が確かめたものを、本番の DB に結んで一覧に戻す。判定は `data/reviews/*.json` に置き、
+移転先を人が確かめたものを、本番の DB に反映して一覧に戻す。判定は `data/reviews/*.json` に置き、
 GitHub Actions の `Apply reviews`（`.github/workflows/apply-reviews.yml`）を手で流す。
 
 ワークフローは3段で動く。
 
 1. `pipeline apply-reviews register <file>`: `hit`・`index` の候補の URL を `urls` に入れる（既にある行は触らない）
 2. `pipeline crawl --kind reviews`: 登録したばかりの候補を取る（`crawl_runs` には `reviews` で残る）
-3. `pipeline apply-reviews link <file>`: 候補の資源が `active` なら結ぶ
+3. `pipeline apply-reviews link <file>`: 候補の資源が `active` なら反映する
 
-| 判定 | 結び方 | family-app での見え方 |
+| 判定 | 反映のしかた | family-app での見え方 |
 |---|---|---|
 | `hit`（同じ制度の今のページ） | 元の URL のいまの資源を `moved` にし、候補の資源へ向ける | 候補のページが公式ページとして、注記なしで出る |
-| `index`（制度へのリンクがある一覧ページ） | `program_urls` に `role = 'related'`・`source = 'discovered'` で結ぶ | 「公式ページを開けませんでした」と、一覧ページへのリンク |
+| `index`（制度へのリンクがある一覧ページ） | `program_urls` に `role = 'related'`・`source = 'discovered'` で加える | 「公式ページを開けませんでした」と、一覧ページへのリンク |
 | `none`（どれも違う） | 何もしない | 一覧から外したまま |
 
 `link-related` は死んだ制度の関連リンクを毎週作り直すが、`source = 'discovered'` の行は消さない。
@@ -34,7 +34,7 @@ GitHub Actions の `Apply reviews`（`.github/workflows/apply-reviews.yml`）を
 }
 ```
 
-- `dead_url` は判定したときの主たる URL（`urls.normalized_url`）。流す時点で主たる URL が違えば、その件は結ばない
+- `dead_url` は判定したときの主たる URL（`urls.normalized_url`）。流す時点で主たる URL が違えば、その件は反映しない
 - `url` は `hit`・`index` に必須で、`none` には付けない。同じ制度は1回だけ
 - 入れるのは URL・制度 id・判定だけ（ページの見出しや本文は入れない）
 - 誤りがあれば、DB に触る前に全件をまとめてエラーにする
@@ -42,18 +42,18 @@ GitHub Actions の `Apply reviews`（`.github/workflows/apply-reviews.yml`）を
 ## 流し方
 
 1. 判定のファイルを PR にしてマージする
-2. `Apply reviews` を `dry_run: true`（既定）で流す。登録と結び付けを流してロールバックし、件数だけ出す。
+2. `Apply reviews` を `dry_run: true`（既定）で流す。DB には書かず、登録と反映の件数だけを表示する。
    巡回は流さないので、`link` は新しい候補がすべて「候補をまだ取っていない」になる
 3. 件数を見て、`dry_run: false` で流す
 
 **月曜（定期の巡回の日）には流さない**。巡回と同じ `concurrency` のグループなので同時には走らないが、
 巡回の後ろに待たされ、`crawl` が巡回の残りまで取ることになる。
 
-何度流してもよい（登録・結び付けは、既にあれば何もしない。結び済みの件は「結び済み」に数える）。
+何度流してもよい（登録・反映は、既にあれば何もしない。反映済みの件は「反映済み」に数える）。
 
 ## 報告の読み方
 
-`link` は件数（移転・関連リンク・結び済み・none・結ばなかった・書けなかった）と、結ばなかった判定を理由ごとに出す。
+`link` は件数（移転・関連リンク・反映済み・none・反映しなかった・書けなかった）と、反映しなかった判定を理由ごとに出す。
 Actions では実行サマリーにも足す。書けなかった判定（DB のエラー）が1件でもあれば、終了コード1で終える。
 
 | 理由 | 意味 | どうするか |
@@ -68,7 +68,7 @@ Actions では実行サマリーにも足す。書けなかった判定（DB の
 
 ## 流した後の確かめ方
 
-一覧から外している市区町村の制度を数え直す。流す前より、`hit`・`index` で結んだ件数だけ減る。
+一覧から外している市区町村の制度を数え直す。流す前より、`hit`・`index` で反映した件数だけ減る。
 
 ```sql
 WITH linked AS (

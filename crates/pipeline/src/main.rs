@@ -65,8 +65,8 @@ enum Command {
     /// 主たる URL が死んだ制度に、レジストリの行に書かれた同じサイトのページを関連 URL として結ぶ（DATABASE_URL を使う）。
     /// 1制度3件まで。巡回の前に流すと、続く巡回が生死を確かめる。何度流してもよい
     LinkRelated,
-    /// 人が判定した移転先（data/reviews/*.json）を結ぶ（DATABASE_URL を使う）。
-    /// register で候補の URL を登録し、crawl で取ったあと、link で結ぶ。何度流してもよい
+    /// 人が判定した移転先（data/reviews/*.json）を DB に反映する（DATABASE_URL を使う）。
+    /// register で候補の URL を登録し、crawl で取ったあと、link で反映する。何度流してもよい
     ApplyReviews {
         #[command(subcommand)]
         step: ReviewStep,
@@ -96,15 +96,15 @@ enum ReviewStep {
     Register {
         /// 判定のファイル
         file: PathBuf,
-        /// 書かずに、何をするかを数えて出す
+        /// DB には書かず、件数だけを表示する
         #[arg(long)]
         dry_run: bool,
     },
-    /// 候補の資源が active なら結ぶ（hit は元の資源を moved に、index は関連リンクに）
+    /// 候補の資源が active なら反映する（hit は元の資源を moved に、index は関連リンクに）
     Link {
         /// 判定のファイル
         file: PathBuf,
-        /// 書かずに、何をするかを数えて出す
+        /// DB には書かず、件数だけを表示する
         #[arg(long)]
         dry_run: bool,
     },
@@ -293,7 +293,7 @@ fn register_markdown(counts: &RegisterCounts, dry_run: bool) -> String {
 
 fn link_markdown(report: &LinkReport, dry_run: bool) -> String {
     let mut out = format!(
-        "{}移転 {} 件 / 関連リンク {} 件 / 結び済み {} 件 / none {} 件 / 結ばなかった {} 件 / 書けなかった {} 件\n",
+        "{}移転 {} 件 / 関連リンク {} 件 / 反映済み {} 件 / none {} 件 / 反映しなかった {} 件 / 書けなかった {} 件\n",
         dry_run_mark(dry_run),
         report.moved,
         report.related,
@@ -303,7 +303,7 @@ fn link_markdown(report: &LinkReport, dry_run: bool) -> String {
         report.failed.len()
     );
     if !report.refused.is_empty() {
-        out.push_str("\n結ばなかった判定:\n\n");
+        out.push_str("\n反映しなかった判定:\n\n");
         for refusal in &report.refused {
             out.push_str(&format!(
                 "- {}: {} {}\n",
