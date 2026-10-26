@@ -1,5 +1,5 @@
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,6 +12,7 @@ use domain::liveness::Verdict;
 use domain::run_report::{Thresholds, render_markdown};
 use pipeline::crawl;
 use pipeline::fetch::{Body, Config, Fetcher, Outcome, Validators};
+use pipeline::reviews::{self, LinkReport, RegisterCounts};
 use pipeline::{host_moves, import_registry, lifecycle, link_related, resources, run_report};
 use sea_orm::prelude::Uuid;
 
@@ -64,6 +65,12 @@ enum Command {
     /// 主たる URL が死んだ制度に、レジストリの行に書かれた同じサイトのページを関連 URL として結ぶ（DATABASE_URL を使う）。
     /// 1制度3件まで。巡回の前に流すと、続く巡回が生死を確かめる。何度流してもよい
     LinkRelated,
+    /// 人が判定した移転先（data/reviews/*.json）を DB に反映する（DATABASE_URL を使う）。
+    /// register で候補の URL を登録し、crawl で取ったあと、link で反映する。何度流してもよい
+    ApplyReviews {
+        #[command(subcommand)]
+        step: ReviewStep,
+    },
     /// 実行のサマリーを出す（DATABASE_URL を使う）。既定は最新の実行。
     /// 途中で止まった実行は履歴から数え直す（再試行・lease 切れの数は出ない）
     RunReport {
@@ -80,6 +87,26 @@ enum Command {
         /// 移行先のホスト
         #[arg(long)]
         to: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ReviewStep {
+    /// hit・index の候補の URL を urls に入れる（既にある行は触らない）
+    Register {
+        /// 判定のファイル
+        file: PathBuf,
+        /// DB には書かず、件数だけを表示する
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// 候補の資源が active なら反映する（hit は元の資源を moved に、index は関連リンクに）
+    Link {
+        /// 判定のファイル
+        file: PathBuf,
+        /// DB には書かず、件数だけを表示する
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -188,6 +215,33 @@ async fn main() -> anyhow::Result<()> {
                 println!("候補にしなかった URL: {}", dropped.join(" / "));
             }
         }
+        Command::ApplyReviews { step } => {
+            let database_url = std::env::var("DATABASE_URL").context("DATABASE_URL が無い")?;
+            let db = sea_orm::Database::connect(&database_url).await?;
+            let (file, dry_run) = match &step {
+                ReviewStep::Register { file, dry_run } | ReviewStep::Link { file, dry_run } => {
+                    (file, *dry_run)
+                }
+            };
+            let json = std::fs::read_to_string(file)
+                .with_context(|| format!("{} を読めない", file.display()))?;
+            let reviews = reviews::parse(&json)?;
+            let markdown = match step {
+                ReviewStep::Register { .. } => {
+                    register_markdown(&reviews::register(&db, &reviews, dry_run).await?, dry_run)
+                }
+                ReviewStep::Link { .. } => {
+                    let report = reviews::link(&db, &reviews, dry_run).await?;
+                    let markdown = link_markdown(&report, dry_run);
+                    if !report.failed.is_empty() {
+                        print_summary(&markdown);
+                        anyhow::bail!("書けなかった判定が {} 件ある", report.failed.len());
+                    }
+                    markdown
+                }
+            };
+            print_summary(&markdown);
+        }
         Command::RunReport { run } => {
             let database_url = std::env::var("DATABASE_URL").context("DATABASE_URL が無い")?;
             let db = sea_orm::Database::connect(&database_url).await?;
@@ -207,6 +261,65 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// 標準出力に出し、Actions では実行サマリーにも足す
+fn print_summary(markdown: &str) {
+    println!("{markdown}");
+    if let Some(path) = std::env::var_os("GITHUB_STEP_SUMMARY")
+        && let Err(e) = run_report::append_step_summary(Path::new(&path), markdown)
+    {
+        eprintln!("警告: 実行サマリーを書けない: {e}");
+    }
+}
+
+fn dry_run_mark(dry_run: bool) -> &'static str {
+    if dry_run {
+        "（試し流し・書いていない）"
+    } else {
+        ""
+    }
+}
+
+fn register_markdown(counts: &RegisterCounts, dry_run: bool) -> String {
+    format!(
+        "{}候補の URL: 新規 {} 件・既存 {} 件 / none {} 件\n",
+        dry_run_mark(dry_run),
+        counts.new_urls,
+        counts.existing_urls,
+        counts.none
+    )
+}
+
+fn link_markdown(report: &LinkReport, dry_run: bool) -> String {
+    let mut out = format!(
+        "{}移転 {} 件 / 関連リンク {} 件 / 反映済み {} 件 / none {} 件 / 反映しなかった {} 件 / 書けなかった {} 件\n",
+        dry_run_mark(dry_run),
+        report.moved,
+        report.related,
+        report.already,
+        report.none,
+        report.refused.len(),
+        report.failed.len()
+    );
+    if !report.refused.is_empty() {
+        out.push_str("\n反映しなかった判定:\n\n");
+        for refusal in &report.refused {
+            out.push_str(&format!(
+                "- {}: {} {}\n",
+                refusal.reason.label(),
+                refusal.program_id,
+                refusal.url
+            ));
+        }
+    }
+    if !report.failed.is_empty() {
+        out.push_str("\n書けなかった判定:\n\n");
+        for (program_id, error) in &report.failed {
+            out.push_str(&format!("- {program_id}: {error}\n"));
+        }
+    }
+    out
 }
 
 fn print_extracted(extracted: &Extracted) {
