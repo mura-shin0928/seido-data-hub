@@ -9,7 +9,7 @@ GitHub Actions の `Apply reviews`（`.github/workflows/apply-reviews.yml`）を
 ワークフローは3段で動く。
 
 1. `pipeline apply-reviews register <file>`: `hit`・`index` の候補の URL を `urls` に入れる（既にある行は触らない）
-2. `pipeline crawl --kind reviews`: 登録したばかりの候補を取る（`crawl_runs` には `reviews` で残る）
+2. `pipeline crawl --kind reviews`: 登録したばかりの候補と、ほかに時刻の来た URL を取る（`crawl_runs` には `reviews` で残る）
 3. `pipeline apply-reviews link <file>`: 候補の資源が `active` なら反映する
 
 | 判定 | 反映のしかた | API が返すもの |
@@ -54,6 +54,10 @@ GitHub Actions の `Apply reviews`（`.github/workflows/apply-reviews.yml`）を
 巡回の後ろに待たされ、`crawl` が巡回の残りまで取ることになる。
 
 何度流してもよい（登録・反映は、既にあれば何もしない。反映済みの件は「反映済み」に数える）。
+
+土曜の夜（前回の定期の巡回の5日後）に流したときは、巡回が4,590件を取った（約8分）。
+
+巡回が警告（robots.txt が読めないホストなど）に当たるとジョブは失敗になるが、そのあとの `link` は流れる。反映できたかは `link` の報告で見る。
 
 ## 報告の読み方
 
