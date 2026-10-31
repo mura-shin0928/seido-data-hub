@@ -604,3 +604,75 @@ async fn dry_run_counts_match_the_real_run_on_a_shared_url() {
     assert_eq!(main_of(&db, programs[0].id).await.0, programs[0].main_url);
     assert_eq!(main_of(&db, programs[1].id).await.0, programs[0].main_url);
 }
+
+#[tokio::test]
+async fn hit_on_the_dead_url_itself_is_refused() {
+    let Some((db, _guard)) = common::fresh_db().await else {
+        return;
+    };
+    let programs = setup(&db).await;
+    dead_main(&db, &programs[0], "deleted").await;
+    let dead = programs[0].main_url.clone();
+    let f = file(vec![review(&programs[0], "hit", Some(&dead))]);
+    assert_eq!(refusal(&db, &f).await, RefuseReason::SameResource);
+}
+
+#[tokio::test]
+async fn rerun_with_a_different_candidate_is_refused() {
+    let Some((db, _guard)) = common::fresh_db().await else {
+        return;
+    };
+    let programs = setup(&db).await;
+    dead_main(&db, &programs[0], "deleted").await;
+    candidate(&db, HIT, "active").await;
+    candidate(&db, LIST, "active").await;
+    link(
+        &db,
+        &file(vec![review(&programs[0], "hit", Some(HIT))]),
+        false,
+    )
+    .await
+    .unwrap();
+    let f = file(vec![review(&programs[0], "hit", Some(LIST))]);
+    assert_eq!(refusal(&db, &f).await, RefuseReason::MainChanged);
+    assert_eq!(main_of(&db, programs[0].id).await.0, HIT);
+}
+
+#[tokio::test]
+async fn replaced_main_survives_import_and_can_be_undone() {
+    let Some((db, _guard)) = common::fresh_db().await else {
+        return;
+    };
+    let programs = setup(&db).await;
+    dead_main(&db, &programs[0], "deleted").await;
+    candidate(&db, HIT, "active").await;
+    link(
+        &db,
+        &file(vec![review(&programs[0], "hit", Some(HIT))]),
+        false,
+    )
+    .await
+    .unwrap();
+    import(&db, domain::registry::parse(FIXTURE).unwrap())
+        .await
+        .expect("取り込める");
+    assert_eq!(
+        main_of(&db, programs[0].id).await,
+        (HIT.to_string(), "discovered".to_string())
+    );
+    // 誤った判定の戻し方（docs/apply-reviews.md）
+    db.execute_raw(Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "update program_urls set source = 'registry' where program_id = $1 and role = 'main'",
+        [programs[0].id.into()],
+    ))
+    .await
+    .unwrap();
+    import(&db, domain::registry::parse(FIXTURE).unwrap())
+        .await
+        .expect("取り込める");
+    assert_eq!(
+        main_of(&db, programs[0].id).await,
+        (programs[0].main_url.clone(), "registry".to_string())
+    );
+}

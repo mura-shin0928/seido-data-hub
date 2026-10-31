@@ -317,7 +317,7 @@ async fn link_one(
     let main = txn
         .query_one_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
-            "SELECT u.id, u.normalized_url FROM program_urls pu JOIN urls u ON u.id = pu.url_id \
+            "SELECT u.id, u.normalized_url, pu.source FROM program_urls pu JOIN urls u ON u.id = pu.url_id \
              WHERE pu.program_id = $1 AND pu.role = 'main'",
             [review.program_id.into()],
         ))
@@ -326,7 +326,11 @@ async fn link_one(
         return refused(RefuseReason::MainChanged);
     };
     let main_url_id: Uuid = main.try_get_by_index(0)?;
-    if review.verdict == Verdict::Hit && candidate_url_id == Some(main_url_id) {
+    // 候補が元の URL そのものの判定は、差し替え済みではない（下の SameResource で止まる）
+    if review.verdict == Verdict::Hit
+        && candidate_url_id == Some(main_url_id)
+        && main.try_get_by_index::<String>(2)? == "discovered"
+    {
         return Ok(Linked::Already);
     }
     if main.try_get_by_index::<String>(1)? != prepare(&review.dead_url)?.normalized_url {
