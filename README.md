@@ -100,7 +100,7 @@ cargo run -p pipeline -- apply-reviews register data/reviews/2026-10-moves.json 
 cargo run -p pipeline -- apply-reviews link data/reviews/2026-10-moves.json --dry-run
 ```
 
-`hit` は元の URL の資源を `moved` にして候補の資源へ向け、`index` は候補を関連リンク（`discovered`）として加え、`none` は何もしない。
+`hit` は制度の主たる URL を候補に差し替え（`source = 'discovered'`。`import-registry` を流しても残る）、`index` は候補を関連リンク（`discovered`）として加え、`none` は何もしない。
 `--dry-run` は DB には書かず、件数だけを表示する。本番では GitHub Actions の `Apply reviews` を手で流す（[docs/apply-reviews.md](docs/apply-reviews.md)）。
 
 終わりに実行サマリー（ホスト別の status・304 の割合・変更率・404 など）を出し、`crawl_runs` の `stats`・`alerts` にも残す。

@@ -100,7 +100,7 @@ enum ReviewStep {
         #[arg(long)]
         dry_run: bool,
     },
-    /// 候補の資源が active なら反映する（hit は元の資源を moved に、index は関連リンクに）
+    /// 候補の資源が active なら反映する（hit は制度の主たる URL を差し替え、index は関連リンクに加える）
     Link {
         /// 判定のファイル
         file: PathBuf,
@@ -295,7 +295,7 @@ fn link_markdown(report: &LinkReport, dry_run: bool) -> String {
     let mut out = format!(
         "{}移転 {} 件 / 関連リンク {} 件 / 反映済み {} 件 / none {} 件 / 反映しなかった {} 件 / 書けなかった {} 件\n",
         dry_run_mark(dry_run),
-        report.moved,
+        report.replaced,
         report.related,
         report.already,
         report.none,

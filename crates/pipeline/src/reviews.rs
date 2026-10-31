@@ -1,11 +1,14 @@
-//! 人が判定した移転先を結ぶ（決定58）。
+//! 人が判定した移転先を DB に反映する（決定58・59）。
 //!
 //! 判定のファイル（`data/reviews/*.json`）を読み、`register` で候補の URL を `urls` に入れる。続く巡回が取って資源を作る。
-//! `link` で、候補の資源が `active` なら結ぶ: `hit` は元の資源を `moved` にして移転先に向け、
-//! `index` は一覧ページを関連リンク（`source = 'discovered'`）として結ぶ。`none` は記録だけで何もしない。
+//! `link` で、候補の資源が `active` なら反映する: `hit` はその制度の主たる URL を候補に差し替え、
+//! `index` は一覧ページを関連リンク（`source = 'discovered'`）として加える。`none` は記録だけで何もしない。
 //!
-//! 1件ずつのトランザクションで書く。`dry_run` は同じ処理を流してロールバックする（数える処理を別に持たない）。
-//! 判定の後に状況が変わった件（主たる URL が変わった・生き返った・候補が取れない）は結ばずに `Refusal` で返す。
+//! 差し替えは制度ごとの処理で、資源の状態には触らない。1つの古いページに複数の制度が載り、移転先が制度ごとに
+//! 分かれていることがあるので、元の URL を共有する制度を巻き込まない。
+//!
+//! 1件ずつのトランザクションで書く。`dry_run` は同じ処理を流して最後に戻す（数える処理を別に持たない）。
+//! 判定の後に状況が変わった件（主たる URL が変わった・生き返った・候補が取れない）は反映せずに `Refusal` で返す。
 
 use std::collections::BTreeSet;
 
@@ -147,14 +150,12 @@ pub enum RefuseReason {
     NoResource,
     /// 候補の資源が active でない（状態を持つ）
     NotActive(String),
-    /// 主たる URL の normalized_url が dead_url と違う
+    /// 主たる URL の normalized_url が dead_url と違う（制度が無いときも）
     MainChanged,
     /// 元の資源が deleted・deletion_candidate でない（状態を持つ。moved を含む。資源が無ければ "none"）
     MainNotDead(String),
     /// hit で、候補の資源が moved
     TargetMoved,
-    /// hit で、候補の資源の moved_to_resource_id が元の資源
-    Cycle,
     /// hit で、元の資源と候補の資源が同じ
     SameResource,
 }
@@ -167,7 +168,6 @@ impl RefuseReason {
             Self::MainChanged => "主たる URL が判定のときと違う".to_string(),
             Self::MainNotDead(state) => format!("元の資源が死んでいない（{state}）"),
             Self::TargetMoved => "候補の資源が moved".to_string(),
-            Self::Cycle => "候補の資源が元の資源へ移っている（循環）".to_string(),
             Self::SameResource => "候補の資源が元の資源と同じ".to_string(),
         }
     }
@@ -182,9 +182,10 @@ pub struct Refusal {
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct LinkReport {
-    pub moved: usize,
+    /// 主たる URL を候補に差し替えた
+    pub replaced: usize,
     pub related: usize,
-    /// 既に結んであった（もう一度流したとき）
+    /// 既に反映してあった（もう一度流したとき）
     pub already: usize,
     pub none: usize,
     pub refused: Vec<Refusal>,
@@ -193,13 +194,13 @@ pub struct LinkReport {
 }
 
 enum Linked {
-    Moved,
+    Replaced,
     Related,
     Already,
     Refused(RefuseReason),
 }
 
-/// 候補の資源が active なら結ぶ。1件ずつのトランザクション
+/// 候補の資源が active なら反映する。1件ずつのトランザクション
 pub async fn link(
     db: &DatabaseConnection,
     file: &ReviewFile,
@@ -228,9 +229,9 @@ async fn link_all<C: TransactionTrait>(
             report.none += 1;
             continue;
         };
-        // 始める・確定するところの失敗も、その件の失敗として積んで続ける（それまでに結んだ件の報告を残すため）
+        // 始める・確定するところの失敗も、その件の失敗として積んで続ける（それまでに反映した件の報告を残すため）
         match link_in_txn(db, review, &url).await {
-            Ok(Linked::Moved) => report.moved += 1,
+            Ok(Linked::Replaced) => report.replaced += 1,
             Ok(Linked::Related) => report.related += 1,
             Ok(Linked::Already) => report.already += 1,
             Ok(Linked::Refused(reason)) => report.refused.push(Refusal {
@@ -271,18 +272,17 @@ fn candidate_of(review: &Review) -> anyhow::Result<Option<PreparedUrl>> {
     }
 }
 
-/// いまの資源（`observed_at` が最新の結び付き。API と `link-related` と同じ見方）の id・状態・移り先
+/// いまの資源（`observed_at` が最新の結び付き。API と `link-related` と同じ見方）の id と状態
 struct Current {
     id: Uuid,
     state: String,
-    moved_to: Option<Uuid>,
 }
 
 async fn current(txn: &impl ConnectionTrait, url_id: Uuid) -> Result<Option<Current>, DbErr> {
     let row = txn
         .query_one_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
-            "SELECT r.id, r.state, r.moved_to_resource_id FROM url_resources ur \
+            "SELECT r.id, r.state FROM url_resources ur \
              JOIN resources r ON r.id = ur.resource_id \
              WHERE ur.url_id = $1 ORDER BY ur.observed_at DESC LIMIT 1",
             [url_id.into()],
@@ -292,7 +292,6 @@ async fn current(txn: &impl ConnectionTrait, url_id: Uuid) -> Result<Option<Curr
         Ok(Current {
             id: row.try_get_by_index(0)?,
             state: row.try_get_by_index(1)?,
-            moved_to: row.try_get_by_index(2)?,
         })
     })
     .transpose()
@@ -305,23 +304,6 @@ async fn link_one(
 ) -> anyhow::Result<Linked> {
     let refused = |reason| Ok(Linked::Refused(reason));
 
-    let main = txn
-        .query_one_raw(Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            "SELECT u.id, u.normalized_url FROM program_urls pu JOIN urls u ON u.id = pu.url_id \
-             WHERE pu.program_id = $1 AND pu.role = 'main'",
-            [review.program_id.into()],
-        ))
-        .await?;
-    let dead_url = prepare(&review.dead_url)?.normalized_url;
-    let main_url_id: Uuid = match main {
-        Some(row) if row.try_get_by_index::<String>(1)? == dead_url => row.try_get_by_index(0)?,
-        _ => return refused(RefuseReason::MainChanged),
-    };
-    let Some(main) = current(txn, main_url_id).await? else {
-        return refused(RefuseReason::MainNotDead("none".to_string()));
-    };
-
     let candidate_url_id: Option<Uuid> = txn
         .query_one_raw(Statement::from_sql_and_values(
             DbBackend::Postgres,
@@ -331,68 +313,97 @@ async fn link_one(
         .await?
         .map(|row| row.try_get_by_index(0))
         .transpose()?;
+
+    let main = txn
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT u.id, u.normalized_url FROM program_urls pu JOIN urls u ON u.id = pu.url_id \
+             WHERE pu.program_id = $1 AND pu.role = 'main'",
+            [review.program_id.into()],
+        ))
+        .await?;
+    let Some(main) = main else {
+        return refused(RefuseReason::MainChanged);
+    };
+    let main_url_id: Uuid = main.try_get_by_index(0)?;
+    if review.verdict == Verdict::Hit && candidate_url_id == Some(main_url_id) {
+        return Ok(Linked::Already);
+    }
+    if main.try_get_by_index::<String>(1)? != prepare(&review.dead_url)?.normalized_url {
+        return refused(RefuseReason::MainChanged);
+    }
+
+    let Some(old) = current(txn, main_url_id).await? else {
+        return refused(RefuseReason::MainNotDead("none".to_string()));
+    };
     let Some(candidate_url_id) = candidate_url_id else {
         return refused(RefuseReason::NoResource);
     };
     let Some(target) = current(txn, candidate_url_id).await? else {
         return refused(RefuseReason::NoResource);
     };
-    let main_is_dead = matches!(main.state.as_str(), "deleted" | "deletion_candidate");
+    if review.verdict == Verdict::Hit {
+        if target.id == old.id {
+            return refused(RefuseReason::SameResource);
+        }
+        if target.state == "moved" {
+            return refused(RefuseReason::TargetMoved);
+        }
+    }
+    if target.state != "active" {
+        return refused(RefuseReason::NotActive(target.state));
+    }
+
+    let exists = txn
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT 1 FROM program_urls WHERE program_id = $1 AND url_id = $2",
+            [review.program_id.into(), candidate_url_id.into()],
+        ))
+        .await?
+        .is_some();
+    if review.verdict == Verdict::Index && exists {
+        return Ok(Linked::Already);
+    }
+    if !matches!(old.state.as_str(), "deleted" | "deletion_candidate") {
+        return refused(RefuseReason::MainNotDead(old.state));
+    }
 
     match review.verdict {
         Verdict::Hit => {
-            // 巡回が転送で moved にするときの規則（lifecycle の Refused）に合わせる
-            if target.id == main.id {
-                return refused(RefuseReason::SameResource);
-            }
-            if target.state == "moved" {
-                return refused(RefuseReason::TargetMoved);
-            }
-            if target.state != "active" {
-                return refused(RefuseReason::NotActive(target.state));
-            }
-            if main.state == "moved" && main.moved_to == Some(target.id) {
-                return Ok(Linked::Already);
-            }
-            if !main_is_dead {
-                return refused(RefuseReason::MainNotDead(main.state));
-            }
-            if target.moved_to == Some(main.id) {
-                return refused(RefuseReason::Cycle);
+            // 候補がその制度の関連 URL にもあれば、主キーが重なるので関連の行を消す
+            if exists {
+                txn.execute_raw(Statement::from_sql_and_values(
+                    DbBackend::Postgres,
+                    "DELETE FROM program_urls WHERE program_id = $1 AND url_id = $2",
+                    [review.program_id.into(), candidate_url_id.into()],
+                ))
+                .await
+                .context("候補の関連リンクを消せない")?;
             }
             // 読んでから書くまでに巡回が生き返らせていたら書かない（同じ実行の外で流れた巡回との競合）
             let updated = txn
                 .execute_raw(Statement::from_sql_and_values(
                     DbBackend::Postgres,
-                    "UPDATE resources SET state = 'moved', moved_to_resource_id = $1, updated_at = now() \
-                     WHERE id = $2 AND state IN ('deleted', 'deletion_candidate')",
-                    [target.id.into(), main.id.into()],
+                    "UPDATE program_urls SET url_id = $1, source = 'discovered' \
+                     WHERE program_id = $2 AND role = 'main' AND url_id = $3 \
+                     AND EXISTS (SELECT 1 FROM resources \
+                                 WHERE id = $4 AND state IN ('deleted', 'deletion_candidate'))",
+                    [
+                        candidate_url_id.into(),
+                        review.program_id.into(),
+                        main_url_id.into(),
+                        old.id.into(),
+                    ],
                 ))
                 .await
-                .context("資源を moved にできない")?;
+                .context("主たる URL を差し替えられない")?;
             if updated.rows_affected() == 0 {
-                return refused(RefuseReason::MainNotDead("changed".to_string()));
+                bail!("主たる URL を差し替える直前に元の資源の状態が変わった");
             }
-            Ok(Linked::Moved)
+            Ok(Linked::Replaced)
         }
         Verdict::Index => {
-            if target.state != "active" {
-                return refused(RefuseReason::NotActive(target.state));
-            }
-            let exists = txn
-                .query_one_raw(Statement::from_sql_and_values(
-                    DbBackend::Postgres,
-                    "SELECT 1 FROM program_urls WHERE program_id = $1 AND url_id = $2",
-                    [review.program_id.into(), candidate_url_id.into()],
-                ))
-                .await?
-                .is_some();
-            if exists {
-                return Ok(Linked::Already);
-            }
-            if !main_is_dead {
-                return refused(RefuseReason::MainNotDead(main.state));
-            }
             let rank: i32 = txn
                 .query_one_raw(Statement::from_sql_and_values(
                     DbBackend::Postgres,

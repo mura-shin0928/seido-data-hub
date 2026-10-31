@@ -1,4 +1,4 @@
-//! 人が判定した移転先を、実際の Postgres に結ぶ。
+//! 人が判定した移転先を、実際の Postgres に反映する。
 //!
 //! `TEST_DATABASE_URL` のデータベースは毎回作り直す（本番の接続先を入れないこと）。未設定ならスキップする。
 //! 候補の URL の資源は巡回を流さずに SQL で作る。
@@ -98,6 +98,24 @@ async fn state_of(db: &DatabaseConnection, id: Uuid) -> (String, Option<Uuid>) {
             db.get_database_backend(),
             "select state, moved_to_resource_id from resources where id = $1",
             [id.into()],
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    (
+        row.try_get_by_index(0).unwrap(),
+        row.try_get_by_index(1).unwrap(),
+    )
+}
+
+/// その制度の主たる URL（normalized_url, source）
+async fn main_of(db: &DatabaseConnection, program_id: Uuid) -> (String, String) {
+    let row = db
+        .query_one_raw(Statement::from_sql_and_values(
+            db.get_database_backend(),
+            "select u.normalized_url, pu.source from program_urls pu join urls u on u.id = pu.url_id \
+             where pu.program_id = $1 and pu.role = 'main'",
+            [program_id.into()],
         ))
         .await
         .unwrap()
@@ -252,13 +270,13 @@ async fn register_dry_run_writes_nothing() {
 }
 
 #[tokio::test]
-async fn hit_moves_dead_resource() {
+async fn hit_replaces_main_url() {
     let Some((db, _guard)) = common::fresh_db().await else {
         return;
     };
     let programs = setup(&db).await;
     let old = dead_main(&db, &programs[0], "deletion_candidate").await;
-    let new = candidate(&db, HIT, "active").await;
+    candidate(&db, HIT, "active").await;
     let report = link(
         &db,
         &file(vec![review(&programs[0], "hit", Some(HIT))]),
@@ -266,9 +284,17 @@ async fn hit_moves_dead_resource() {
     )
     .await
     .unwrap();
-    assert_eq!(report.moved, 1);
+    assert_eq!(report.replaced, 1);
     assert!(report.refused.is_empty() && report.failed.is_empty());
-    assert_eq!(state_of(&db, old).await, ("moved".to_string(), Some(new)));
+    assert_eq!(
+        main_of(&db, programs[0].id).await,
+        (HIT.to_string(), "discovered".to_string())
+    );
+    // 資源の状態は変えない（元の URL を共有する制度を巻き込まないため）
+    assert_eq!(
+        state_of(&db, old).await,
+        ("deletion_candidate".to_string(), None)
+    );
 }
 
 #[tokio::test]
@@ -282,8 +308,46 @@ async fn hit_twice_is_already() {
     let f = file(vec![review(&programs[0], "hit", Some(HIT))]);
     link(&db, &f, false).await.unwrap();
     let second = link(&db, &f, false).await.unwrap();
-    assert_eq!((second.moved, second.already), (0, 1));
+    assert_eq!((second.replaced, second.already), (0, 1));
     assert!(second.refused.is_empty());
+}
+
+#[tokio::test]
+async fn hit_on_a_related_url_of_the_same_program() {
+    let Some((db, _guard)) = common::fresh_db().await else {
+        return;
+    };
+    let programs = setup(&db).await;
+    dead_main(&db, &programs[0], "deleted").await;
+    candidate(&db, HIT, "active").await;
+    db.execute_raw(Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "insert into program_urls (program_id, url_id, role, rank) \
+         select $1, id, 'related', 1 from urls where normalized_url = $2",
+        [programs[0].id.into(), HIT.into()],
+    ))
+    .await
+    .unwrap();
+    let report = link(
+        &db,
+        &file(vec![review(&programs[0], "hit", Some(HIT))]),
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.replaced, 1, "{report:?}");
+    assert_eq!(main_of(&db, programs[0].id).await.0, HIT);
+    assert_eq!(
+        count(
+            &db,
+            &format!(
+                "select count(*) from program_urls where program_id = '{}' and role = 'related'",
+                programs[0].id
+            )
+        )
+        .await,
+        0
+    );
 }
 
 #[tokio::test]
@@ -406,58 +470,69 @@ async fn main_revived_is_refused() {
     assert_eq!(state_of(&db, old).await, ("active".to_string(), None));
 }
 
+/// 3つの制度の主たる URL を、1つ目と同じ URL にする（レジストリで URL を共有する制度）
+async fn share_main_url(db: &DatabaseConnection, programs: &[Program]) {
+    for program in &programs[1..] {
+        db.execute_raw(Statement::from_sql_and_values(
+            db.get_database_backend(),
+            "update program_urls set url_id = $1 where program_id = $2 and role = 'main'",
+            [programs[0].main_url_id.into(), program.id.into()],
+        ))
+        .await
+        .unwrap();
+    }
+}
+
+fn shared_review(
+    program: &Program,
+    first: &Program,
+    verdict: &str,
+    url: Option<&str>,
+) -> serde_json::Value {
+    let mut r = review(program, verdict, url);
+    r["dead_url"] = first.main_url.clone().into();
+    r
+}
+
 #[tokio::test]
-async fn second_hit_on_shared_resource_is_refused() {
+async fn hits_on_a_shared_url_change_only_each_program() {
     let Some((db, _guard)) = common::fresh_db().await else {
         return;
     };
     let programs = setup(&db).await;
-    // 2つ目の制度の主たる URL を、1つ目と同じ URL にする（レジストリで URL を共有する制度）
-    db.execute_raw(Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "update program_urls set url_id = $1 where program_id = $2 and role = 'main'",
-        [programs[0].main_url_id.into(), programs[1].id.into()],
-    ))
-    .await
-    .unwrap();
+    share_main_url(&db, &programs).await;
     let old = dead_main(&db, &programs[0], "deleted").await;
-    let first = candidate(&db, HIT, "active").await;
+    candidate(&db, HIT, "active").await;
     candidate(&db, LIST, "active").await;
-    let mut second = review(&programs[1], "hit", Some(LIST));
-    second["dead_url"] = programs[0].main_url.clone().into();
+    // 1つの古いページに載っていた制度の移転先が分かれる。3つ目は「どれも違う」
     let report = link(
         &db,
-        &file(vec![review(&programs[0], "hit", Some(HIT)), second]),
+        &file(vec![
+            shared_review(&programs[0], &programs[0], "hit", Some(HIT)),
+            shared_review(&programs[1], &programs[0], "hit", Some(LIST)),
+            shared_review(&programs[2], &programs[0], "none", None),
+        ]),
         false,
     )
     .await
     .unwrap();
-    assert_eq!(report.moved, 1);
-    assert_eq!(
-        report.refused[0].reason,
-        RefuseReason::MainNotDead("moved".to_string())
-    );
-    assert_eq!(state_of(&db, old).await, ("moved".to_string(), Some(first)));
+    assert_eq!((report.replaced, report.none), (2, 1), "{report:?}");
+    assert_eq!(main_of(&db, programs[0].id).await.0, HIT);
+    assert_eq!(main_of(&db, programs[1].id).await.0, LIST);
+    assert_eq!(main_of(&db, programs[2].id).await.0, programs[0].main_url);
+    assert_eq!(state_of(&db, old).await, ("deleted".to_string(), None));
 }
 
 #[tokio::test]
-async fn target_moved_or_cycle_is_refused() {
+async fn target_moved_is_refused() {
     let Some((db, _guard)) = common::fresh_db().await else {
         return;
     };
     let programs = setup(&db).await;
-    let old = dead_main(&db, &programs[0], "deleted").await;
-    let target = candidate(&db, HIT, "moved").await;
+    dead_main(&db, &programs[0], "deleted").await;
+    candidate(&db, HIT, "moved").await;
     let f = file(vec![review(&programs[0], "hit", Some(HIT))]);
     assert_eq!(refusal(&db, &f).await, RefuseReason::TargetMoved);
-    db.execute_raw(Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "update resources set state = 'active', moved_to_resource_id = $1 where id = $2",
-        [old.into(), target.into()],
-    ))
-    .await
-    .unwrap();
-    assert_eq!(refusal(&db, &f).await, RefuseReason::Cycle);
 }
 
 #[tokio::test]
@@ -480,7 +555,7 @@ async fn link_dry_run_writes_nothing() {
         return;
     };
     let programs = setup(&db).await;
-    let old = dead_main(&db, &programs[0], "deletion_candidate").await;
+    dead_main(&db, &programs[0], "deletion_candidate").await;
     candidate(&db, HIT, "active").await;
     let report = link(
         &db,
@@ -489,10 +564,10 @@ async fn link_dry_run_writes_nothing() {
     )
     .await
     .unwrap();
-    assert_eq!(report.moved, 1);
+    assert_eq!(report.replaced, 1);
     assert_eq!(
-        state_of(&db, old).await,
-        ("deletion_candidate".to_string(), None)
+        main_of(&db, programs[0].id).await,
+        (programs[0].main_url.clone(), "registry".to_string())
     );
 }
 
@@ -511,30 +586,21 @@ fn parse_rejects_candidate_on_another_host() {
 }
 
 #[tokio::test]
-async fn dry_run_counts_match_the_real_run_on_shared_resource() {
+async fn dry_run_counts_match_the_real_run_on_a_shared_url() {
     let Some((db, _guard)) = common::fresh_db().await else {
         return;
     };
     let programs = setup(&db).await;
-    db.execute_raw(Statement::from_sql_and_values(
-        db.get_database_backend(),
-        "update program_urls set url_id = $1 where program_id = $2 and role = 'main'",
-        [programs[0].main_url_id.into(), programs[1].id.into()],
-    ))
-    .await
-    .unwrap();
-    let old = dead_main(&db, &programs[0], "deleted").await;
+    share_main_url(&db, &programs).await;
+    dead_main(&db, &programs[0], "deleted").await;
     candidate(&db, HIT, "active").await;
     candidate(&db, LIST, "active").await;
-    let mut second = review(&programs[1], "hit", Some(LIST));
-    second["dead_url"] = programs[0].main_url.clone().into();
-    let f = file(vec![review(&programs[0], "hit", Some(HIT)), second]);
-    // 試し流しでも、前の判定の結果を見て次を決める（本番と同じ件数になる）
+    let f = file(vec![
+        shared_review(&programs[0], &programs[0], "hit", Some(HIT)),
+        shared_review(&programs[1], &programs[0], "hit", Some(LIST)),
+    ]);
     let report = link(&db, &f, true).await.unwrap();
-    assert_eq!(report.moved, 1);
-    assert_eq!(
-        report.refused[0].reason,
-        RefuseReason::MainNotDead("moved".to_string())
-    );
-    assert_eq!(state_of(&db, old).await, ("deleted".to_string(), None));
+    assert_eq!(report.replaced, 2, "{report:?}");
+    assert_eq!(main_of(&db, programs[0].id).await.0, programs[0].main_url);
+    assert_eq!(main_of(&db, programs[1].id).await.0, programs[0].main_url);
 }

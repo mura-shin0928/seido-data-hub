@@ -295,3 +295,38 @@ async fn reimport_keeps_related_links() {
         1
     );
 }
+
+#[tokio::test]
+async fn reimport_keeps_a_main_url_replaced_by_a_review() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    run(&db, FIXTURE).await;
+    let before = count(&db, "select count(*) from program_urls where role = 'main'").await;
+    // 1制度の主たる URL を、人の判定で差し替えた形にする
+    db.execute_unprepared(
+        "with u as (insert into urls (raw_url, normalized_url, dedup_key, host_key) \
+             values ('https://www.city.example.jp/new.html', 'https://www.city.example.jp/new.html', \
+                     'https://www.city.example.jp/new.html', 'https://www.city.example.jp') returning id), \
+         p as (select program_id from program_urls where role = 'main' order by program_id limit 1) \
+         update program_urls pu set url_id = u.id, source = 'discovered' from u, p \
+         where pu.program_id = p.program_id and pu.role = 'main'",
+    )
+    .await
+    .unwrap();
+    run(&db, FIXTURE).await;
+    assert_eq!(
+        count(&db, "select count(*) from program_urls where role = 'main'").await,
+        before
+    );
+    assert_eq!(
+        count(
+            &db,
+            "select count(*) from program_urls pu join urls u on u.id = pu.url_id \
+             where pu.role = 'main' and pu.source = 'discovered' \
+             and u.normalized_url = 'https://www.city.example.jp/new.html'"
+        )
+        .await,
+        1
+    );
+}

@@ -193,11 +193,23 @@ pub async fn import(db: &DatabaseConnection, imported: Imported) -> anyhow::Resu
     // main は毎回レジストリから作り直す。URL が変わった制度の古い行が残らないようにするため。
     // 関連 URL（role = related）は消さない。
     // その URL が新しい主たる URL になったときは、下の insert で main に書き換える（主キーが重なるため）
+    // 人の判定で差し替えた main（source = 'discovered'）は消さず、その制度にはレジストリの main を入れない
     program_urls::Entity::delete_many()
         .filter(program_urls::Column::Role.eq("main"))
+        .filter(program_urls::Column::Source.eq("registry"))
         .exec(&txn)
         .await
         .context("program_urls の main を消せない")?;
+    let reviewed: BTreeSet<Uuid> = program_urls::Entity::find()
+        .select_only()
+        .column(program_urls::Column::ProgramId)
+        .filter(program_urls::Column::Role.eq("main"))
+        .into_tuple::<Uuid>()
+        .all(&txn)
+        .await
+        .context("差し替え済みの制度を読めない")?
+        .into_iter()
+        .collect();
 
     let links: Vec<_> = main_urls
         .iter()
@@ -208,14 +220,17 @@ pub async fn import(db: &DatabaseConnection, imported: Imported) -> anyhow::Resu
             let url_id = url_ids
                 .get(&main.url.dedup_key)
                 .with_context(|| format!("{} の URL が無い", main.url.dedup_key))?;
-            Ok(program_urls::ActiveModel {
-                program_id: Set(*program_id),
-                url_id: Set(*url_id),
-                role: Set("main".to_string()),
-                rank: Set(1),
-                source: Set("registry".to_string()),
-            })
+            Ok(
+                (!reviewed.contains(program_id)).then(|| program_urls::ActiveModel {
+                    program_id: Set(*program_id),
+                    url_id: Set(*url_id),
+                    role: Set("main".to_string()),
+                    rank: Set(1),
+                    source: Set("registry".to_string()),
+                }),
+            )
         })
+        .filter_map(anyhow::Result::transpose)
         .collect::<anyhow::Result<_>>()?;
     for chunk in links.chunks(CHUNK) {
         program_urls::Entity::insert_many(chunk.to_vec())
