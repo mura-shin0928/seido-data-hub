@@ -39,7 +39,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo build --release -p pipeline
       - run: ./target/release/pipeline apply-reviews register "$FILE" $DRY_RUN
-      # 登録したばかりの候補を取る。週の途中なら、ほかの URL はほとんど時刻が来ていない。試し流しでは取らない
+      # 登録した候補を取得する。定期の巡回と同じ処理なので、取得の時期が来ている他の URL も取得する。試し流しでは実行しない
       - id: crawl
         if: ${{ !inputs.dry_run }}
         run: ./target/release/pipeline crawl --kind reviews

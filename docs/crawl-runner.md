@@ -104,8 +104,10 @@ CodeBuild → ビルドプロジェクト → ビルドプロジェクトを作�
 | 種類 | パターン |
 |---|---|
 | イベント（`EVENT`） | `WORKFLOW_JOB_QUEUED` だけ |
-| ワークフロー名（`WORKFLOW_NAME`） | `^Crawl$` |
+| ワークフロー名（`WORKFLOW_NAME`） | `^(Crawl\|Apply reviews)$` |
 | アクターの ID（`ACTOR_ACCOUNT_ID`。コンソールの表示は `ACTOR_ID`） | `^122416071$` |
+
+このランナーで動かすワークフローを増やすときは、この条件にワークフロー名を追加する。追加しないとランナーが起動せず、ジョブは待ったままになる。
 
 `122416071` は GitHub アカウント `mura-shin0928` の ID（`curl -s https://api.github.com/users/mura-shin0928` の `id`）。
 
