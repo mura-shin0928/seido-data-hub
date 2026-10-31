@@ -270,3 +270,78 @@ async fn stale_links_of_dead_programs_are_replaced_and_revived_programs_keep_the
     assert_eq!(related_of(&db, 0).await.len(), 1);
     assert_eq!(counts.dead_programs, 1);
 }
+
+#[tokio::test]
+async fn discovered_related_survives_relink() {
+    let Some((db, _guard)) = common::fresh_db().await else {
+        return;
+    };
+    import_fixture(&db).await;
+    main_resource(&db, 0, "deleted").await;
+    // 人の判定で足した関連リンク（一覧ページ）
+    db.execute_raw(Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "with u as (insert into urls (raw_url, normalized_url, dedup_key, host_key, priority) \
+             values ('https://www.city.example.jp/kosodate/list/', 'https://www.city.example.jp/kosodate/list/', \
+                     'https://www.city.example.jp/kosodate/list/', 'https://www.city.example.jp', 70) returning id) \
+         insert into program_urls (program_id, url_id, role, rank, source) \
+         select p.id, u.id, 'related', 9, 'discovered' from programs p, u where p.psid = $1",
+        [psid_of(0).into()],
+    ))
+    .await
+    .unwrap();
+    let registry_sql =
+        "select count(*) from program_urls where role = 'related' and source = 'registry'";
+    link(&db).await.unwrap();
+    let registry_after_first = count(&db, registry_sql).await;
+    link(&db).await.unwrap();
+    assert_eq!(
+        count(
+            &db,
+            "select count(*) from program_urls where source = 'discovered'"
+        )
+        .await,
+        1
+    );
+    // registry の関連リンクは今と同じく作り直される（2回流しても数が同じ）
+    assert_eq!(count(&db, registry_sql).await, registry_after_first);
+    assert!(registry_after_first > 0);
+}
+
+#[tokio::test]
+async fn registry_candidate_already_linked_as_discovered_is_kept() {
+    let Some((db, _guard)) = common::fresh_db().await else {
+        return;
+    };
+    import_fixture(&db).await;
+    main_resource(&db, 0, "deleted").await;
+    link(&db).await.unwrap();
+    // レジストリの関連 URL のうち1件を、人の判定で足した行（discovered）に置き換える
+    let (url, _) = related_of(&db, 0)
+        .await
+        .into_iter()
+        .next()
+        .expect("関連 URL がある");
+    db.execute_raw(Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "update program_urls set source = 'discovered', rank = 9 \
+         where url_id = (select id from urls where normalized_url = $1) and role = 'related'",
+        [url.clone().into()],
+    ))
+    .await
+    .unwrap();
+    // 作り直しで同じ URL を registry として入れようとしても、主キーの衝突で失敗せず、discovered の行が残る
+    link(&db).await.unwrap();
+    assert_eq!(
+        count(
+            &db,
+            &format!(
+                "select count(*) from program_urls pu join urls u on u.id = pu.url_id \
+                 where u.normalized_url = '{url}' and pu.role = 'related' \
+                 and pu.source = 'discovered' and pu.rank = 9"
+            )
+        )
+        .await,
+        1
+    );
+}

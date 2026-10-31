@@ -7,4 +7,5 @@ pub mod lifecycle;
 pub mod link_related;
 pub mod persist;
 pub mod resources;
+pub mod reviews;
 pub mod run_report;
