@@ -2,8 +2,8 @@
 
 ## 何をするか
 
-family-app の一覧から外している制度（主たる URL を開けず、生きた関連リンクも無い市区町村の制度）のうち、
-移転先を人が確かめたものを、本番の DB に反映して一覧に戻す。判定は `data/reviews/*.json` に置き、
+主たる URL を開けず、生きた関連リンクも無い市区町村の制度のうち、
+移転先を人が確かめたものを、本番の DB に反映する。判定は `data/reviews/*.json` に置き、
 GitHub Actions の `Apply reviews`（`.github/workflows/apply-reviews.yml`）を手で流す。
 
 ワークフローは3段で動く。
@@ -12,11 +12,11 @@ GitHub Actions の `Apply reviews`（`.github/workflows/apply-reviews.yml`）を
 2. `pipeline crawl --kind reviews`: 登録したばかりの候補を取る（`crawl_runs` には `reviews` で残る）
 3. `pipeline apply-reviews link <file>`: 候補の資源が `active` なら反映する
 
-| 判定 | 反映のしかた | family-app での見え方 |
+| 判定 | 反映のしかた | API が返すもの |
 |---|---|---|
-| `hit`（同じ制度の今のページ） | その制度の `program_urls` の `main` を候補の URL に差し替え、`source = 'discovered'` にする | 候補のページが公式ページとして、注記なしで出る |
-| `index`（制度へのリンクがある一覧ページ） | `program_urls` に `role = 'related'`・`source = 'discovered'` で加える | 「公式ページを開けませんでした」と、一覧ページへのリンク |
-| `none`（どれも違う） | 何もしない | 一覧から外したまま |
+| `hit`（同じ制度の今のページ） | その制度の `program_urls` の `main` を候補の URL に差し替え、`source = 'discovered'` にする | `url` が候補のページになり、`state` は `active` |
+| `index`（制度へのリンクがある一覧ページ） | `program_urls` に `role = 'related'`・`source = 'discovered'` で加える | `state` は元のまま（`deleted`・`deletion_candidate`）で、`related_links` に一覧ページが入る |
+| `none`（どれも違う） | 何もしない | 変わらない |
 
 差し替えは制度ごとの処理で、資源の状態には触らない。元の URL を共有する制度があっても、判定した制度だけが変わる。
 1つの古いページに複数の制度が載り、移転先が制度ごとに分かれていることがあるため。
@@ -84,7 +84,7 @@ WHERE program_id = '<制度の id>' AND role = 'main';
 
 ## 流した後の確かめ方
 
-一覧から外している市区町村の制度を数え直す。流す前より、`hit`・`index` で反映した件数だけ減る。
+主たる URL を開けず、生きた関連リンクも無い市区町村の制度を数え直す。流す前より、`hit`・`index` で反映した件数だけ減る。
 
 ```sql
 WITH linked AS (
