@@ -38,6 +38,10 @@ pub struct Review {
     pub verdict: Verdict,
     /// `hit`・`index` で選んだ候補の URL
     pub url: Option<String>,
+    /// 旧ホストが消え、同じパス・同じクエリのページが別のホストにあると人が確かめた `hit`。
+    /// このときだけ候補のホストが `dead_url` と違ってよく、`register` がその移行を承認する
+    #[serde(default)]
+    pub host_move: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -68,6 +72,15 @@ pub fn parse(json: &str) -> anyhow::Result<ReviewFile> {
             (Verdict::None, Some(_)) => errors.push(format!("{id}: none に url がある")),
             (_, Some(url)) => match (prepare(url), prepare(&review.dead_url)) {
                 (Err(e), _) => errors.push(format!("{id}: url を読めない（{e}）: {url:?}")),
+                (Ok(candidate), Ok(dead)) if review.host_move => {
+                    if review.verdict != Verdict::Hit {
+                        errors.push(format!("{id}: ホスト移行は hit だけ"));
+                    } else if candidate.host_key == dead.host_key {
+                        errors.push(format!("{id}: ホスト移行なのにホストが同じ"));
+                    } else if !same_path_and_query(&candidate, &dead) {
+                        errors.push(format!("{id}: ホスト移行なのにパスかクエリが違う: {url:?}"));
+                    }
+                }
                 // 候補は元の URL と同じホストに限る。別のホストを入れると、そのホストが巡回の許可リストに加わる
                 (Ok(candidate), Ok(dead)) if candidate.host_key != dead.host_key => {
                     errors.push(format!("{id}: url のホストが dead_url と違う: {url:?}"))
@@ -88,6 +101,17 @@ pub fn parse(json: &str) -> anyhow::Result<ReviewFile> {
         );
     }
     Ok(file)
+}
+
+/// ホストだけが変わったか（パスとクエリが同じ）。`domain::liveness` の移行の検出と同じ見方
+fn same_path_and_query(a: &PreparedUrl, b: &PreparedUrl) -> bool {
+    match (
+        url::Url::parse(&a.normalized_url),
+        url::Url::parse(&b.normalized_url),
+    ) {
+        (Ok(a), Ok(b)) => a.path() == b.path() && a.query() == b.query(),
+        _ => false,
+    }
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]

@@ -155,6 +155,54 @@ fn file(reviews: Vec<serde_json::Value>) -> ReviewFile {
 const HIT: &str = "https://www.city.example.jp/kosodate/new.html";
 const LIST: &str = "https://www.city.example.jp/kosodate/";
 
+const OLD_LIB: &str = "https://www.library.city.kita.tokyo.jp/viewer/info.html?id=8";
+const NEW_LIB: &str = "https://www.library.city.kita.lg.jp/viewer/info.html?id=8";
+
+#[test]
+fn parse_accepts_a_host_move_with_the_same_path() {
+    let json = serde_json::json!({
+        "reviewed_at": "2026-11-08",
+        "reviews": [
+            { "program_id": "00000000-0000-0000-0000-000000000001", "dead_url": OLD_LIB,
+              "verdict": "hit", "url": NEW_LIB, "host_move": true },
+        ]
+    });
+    let file = parse(&json.to_string()).unwrap();
+    assert!(file.reviews[0].host_move);
+}
+
+#[test]
+fn parse_rejects_bad_host_moves() {
+    let ids = [
+        "00000000-0000-0000-0000-000000000011",
+        "00000000-0000-0000-0000-000000000012",
+        "00000000-0000-0000-0000-000000000013",
+        "00000000-0000-0000-0000-000000000014",
+    ];
+    let json = serde_json::json!({
+        "reviewed_at": "2026-11-08",
+        "reviews": [
+            // クエリが違う
+            { "program_id": ids[0], "dead_url": OLD_LIB, "verdict": "hit",
+              "url": "https://www.library.city.kita.lg.jp/viewer/info.html?id=9", "host_move": true },
+            // パスが違う
+            { "program_id": ids[1], "dead_url": OLD_LIB, "verdict": "hit",
+              "url": "https://www.library.city.kita.lg.jp/0003/info-0000000008-0.html", "host_move": true },
+            // hit でない
+            { "program_id": ids[2], "dead_url": OLD_LIB, "verdict": "index",
+              "url": NEW_LIB, "host_move": true },
+            // ホストが同じ
+            { "program_id": ids[3], "dead_url": OLD_LIB, "verdict": "hit",
+              "url": "https://www.library.city.kita.tokyo.jp/viewer/info.html?id=56", "host_move": true },
+        ]
+    });
+    let err = parse(&json.to_string()).unwrap_err().to_string();
+    for id in ids {
+        assert!(err.contains(id), "{id} が無い: {err}");
+    }
+    assert!(err.contains("ホスト移行"), "{err}");
+}
+
 #[test]
 fn parse_rejects_malformed() {
     let ids = [
