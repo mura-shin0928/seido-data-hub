@@ -21,7 +21,7 @@ API として提供する（予定）。
 | `crates/domain` | DB も HTTP も知らない純粋ロジック（レジストリの読み取り・月齢の変換など） |
 | `crates/entity` | SeaORM のエンティティ（`sea-orm-cli generate entity` で DB から生成） |
 | `crates/migration` | スキーマ（SQL を SeaORM の migration で流す） |
-| `crates/pipeline` | データの取り込み・更新を行う CLI。取得の結果は `pipeline::persist::record` が履歴・資源の状態・ジョブの完了とともに1つのトランザクションで保存する。`crawl` で巡回を回し、`link-related` で死んだ制度に関連 URL を結ぶ |
+| `crates/pipeline` | データの取り込み・更新を行う CLI。取得の結果は `pipeline::persist::record` が履歴・資源の状態・ジョブの完了とともに1つのトランザクションで保存する。`crawl` で巡回を回し、`link-related` で死んだ制度に関連 URL を加え、`register-index` で一覧ページの起点を登録し、`suggest-moves` で移転先の候補を作る |
 | `crates/api` | 読み取り専用の HTTP API（axum。Lambda でもローカルでも同じ Router） |
 
 ## ローカル開発
@@ -73,7 +73,7 @@ cargo run --release -p pipeline -- crawl --kind sweep
 `--min-responses <件数>` を付けると、応答がその件数に満たない実行を警告にする（既定は0で、見ない）。
 
 本番では、GitHub Actions の `Crawl`（`.github/workflows/crawl.yml`）が毎週月曜 03:17 JST に
-`link-related` を流したあと、`crawl --kind scheduled --due-within-hours 48 --min-responses 1` を流す。前の実行が終わるまで次は待たされる。
+`link-related`・`register-index` を流したあと、`crawl --kind scheduled --due-within-hours 48 --min-responses 1` を流し、最後に `suggest-moves` で移転先の候補のファイル（成果物 `move-candidates`）を作る。前の実行が終わるまで次は待たされる。
 ジョブは DB と同じ東京の AWS CodeBuild をランナーにして動く（作り方は [docs/crawl-runner.md](docs/crawl-runner.md)）。
 失敗の見方と流し直し方は [docs/scheduled-crawl.md](docs/scheduled-crawl.md)。
 
@@ -92,6 +92,24 @@ cargo run -p pipeline -- link-related
 巡回の前に流すと、続く巡回が関連 URL の生死を確かめる。何度流してもよい。
 終わりに、死んだ制度・候補のある制度・結び付き・新規と既存の URL の件数を出し、候補にしなかった URL があれば理由ごとの件数も出す。
 人の判定で足した関連リンク（`source = 'discovered'`）は作り直さずに残す。
+
+主たる URL の親ディレクトリを一覧ページの起点として登録する（`import-registry` 済みの DB に対して流す）:
+
+```bash
+cargo run -p pipeline -- register-index
+```
+
+起点は `urls` に `role = 'index'`・深さ0・優先度90で入れ、既にある行は触らない。起点でなくなった一覧ページは `retired` にして巡回から外し、また起点になれば戻す。
+主たる URL が1件も無いときは、何も書かずにエラーにする。何度流してもよい。次の `crawl` が一覧ページを取り、リンクを `page_links` に残す。
+
+主たる URL が死んだ制度の移転先の候補を、一覧ページのリンクから作る（DB は読むだけ）:
+
+```bash
+cargo run -p pipeline -- suggest-moves --out move-candidates.json
+```
+
+候補は制度名とリンク文字列の近さの順に上位3件。`--reviews`（既定 `data/reviews`）の判定のファイルで確かめ済みの（制度・URL）の組は出さない。
+Markdown の要約（`## 移転先の候補`）を標準出力と実行サマリーに出す。取り方と判定は [docs/apply-reviews.md](docs/apply-reviews.md)。
 
 人が判定した移転先（`data/reviews/*.json`）を DB に反映する（`register` で候補の URL を登録し、`crawl` で取ってから `link` で反映する）:
 
