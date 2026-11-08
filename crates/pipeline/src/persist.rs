@@ -96,7 +96,8 @@ pub async fn record<C: ConnectionTrait + TransactionTrait>(
     };
     let pdf = is_pdf(&txn, attempt.fetch, processed.resource_id).await?;
     let job = processed.verdict.job;
-    let kind = schedule::kind(job, processed.transition.as_ref().map(|t| t.state), pdf);
+    let state = processed.transition.as_ref().map(|t| t.state);
+    let kind = schedule::kind(job, state, pdf, url.role == "index");
     complete_job(
         &txn,
         &url,

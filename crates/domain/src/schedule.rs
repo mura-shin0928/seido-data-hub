@@ -14,6 +14,7 @@
 //! | `pdf` | 30日 | 14日 | 90日 |
 //! | `deletion_candidate` | 7日 | 3日 | 7日 |
 //! | `blocked` | 7日 | 7日 | 30日 |
+//! | `gone_index` | 90日 | 90日 | 90日 |
 //!
 //! 仮置き:
 //! - 前回の間隔がまだ無ければ `initial`。あれば種類の `min`〜`max` に収め直してから伸び縮みさせる
@@ -55,6 +56,8 @@ pub enum Kind {
     Pdf,
     DeletionCandidate,
     Blocked,
+    /// 資源が `deleted` になった一覧ページ（`urls.role = 'index'`）
+    GoneIndex,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +78,9 @@ pub struct Policy {
     pub deletion_candidate: Bounds,
     /// `Blocked` の再評価の間隔
     pub blocked: Bounds,
+    /// 消えた一覧ページの再訪の間隔。
+    /// 仮置き: PDF の上限（90日）と同じ。サイトの作り直しで一覧ページが現れたときに、いずれ気づくため
+    pub gone_index: Bounds,
     /// `FailedFinal` の再評価までの間隔
     pub failed_final_interval: Duration,
     /// robots.txt が読めずホストごと見送ったとき、そのホストの残りの URL を回す先（実行の終わりからの間隔）。
@@ -99,6 +105,7 @@ impl Default for Policy {
             pdf: Bounds::days(30, 14, 90),
             deletion_candidate: Bounds::days(7, 3, 7),
             blocked: Bounds::days(7, 7, 30),
+            gone_index: Bounds::days(90, 90, 90),
             failed_final_interval: 7 * DAY,
             skipped_host_interval: DAY,
             full_fetch_every: 28 * DAY,
@@ -114,6 +121,7 @@ impl Policy {
             Kind::Pdf => self.pdf,
             Kind::DeletionCandidate => self.deletion_candidate,
             Kind::Blocked => self.blocked,
+            Kind::GoneIndex => self.gone_index,
         }
     }
 
@@ -124,6 +132,7 @@ impl Policy {
             self.pdf.min,
             self.deletion_candidate.min,
             self.blocked.min,
+            self.gone_index.min,
             self.failed_final_interval,
         ]
         .into_iter()
@@ -177,12 +186,14 @@ pub struct Visit {
     pub change: Change,
 }
 
-/// 間隔の種類。blocked のジョブ、削除候補の資源、PDF、それ以外（HTML）の順に決める
-pub fn kind(job: Job, state: Option<State>, pdf: bool) -> Kind {
+/// 間隔の種類。blocked のジョブ、削除候補の資源、消えた一覧ページ、PDF、それ以外（HTML）の順に決める
+pub fn kind(job: Job, state: Option<State>, pdf: bool, index: bool) -> Kind {
     if job == Job::Blocked {
         Kind::Blocked
     } else if state == Some(State::DeletionCandidate) {
         Kind::DeletionCandidate
+    } else if index && state == Some(State::Deleted) {
+        Kind::GoneIndex
     } else if pdf {
         Kind::Pdf
     } else {
@@ -246,7 +257,7 @@ fn adapt(bounds: Bounds, visit: Visit, interval: Option<Duration>) -> Duration {
     let base = interval.clamp(bounds.min, bounds.max);
     let moved = match (visit.kind, visit.change) {
         (Kind::Blocked, _) => base.mul_f64(1.5),
-        (Kind::DeletionCandidate, _) => base,
+        (Kind::DeletionCandidate | Kind::GoneIndex, _) => base,
         (_, Change::Changed) => base / 2,
         (_, Change::Unchanged) => base.mul_f64(1.5),
         (_, Change::Unknown) => base,
@@ -519,16 +530,46 @@ mod tests {
 
     #[test]
     fn the_kind_follows_the_job_the_state_and_the_type() {
-        assert_eq!(kind(Job::Blocked, None, false), Kind::Blocked);
+        assert_eq!(kind(Job::Blocked, None, false, false), Kind::Blocked);
         assert_eq!(
-            kind(Job::Succeeded, Some(State::DeletionCandidate), true),
+            kind(Job::Succeeded, Some(State::DeletionCandidate), true, false),
             Kind::DeletionCandidate
         );
-        assert_eq!(kind(Job::Succeeded, Some(State::Active), true), Kind::Pdf);
         assert_eq!(
-            kind(Job::Succeeded, Some(State::Deleted), false),
+            kind(Job::Succeeded, Some(State::Active), true, false),
+            Kind::Pdf
+        );
+        assert_eq!(
+            kind(Job::Succeeded, Some(State::Deleted), false, false),
             Kind::Page
         );
-        assert_eq!(kind(Job::Succeeded, None, false), Kind::Page);
+        assert_eq!(kind(Job::Succeeded, None, false, false), Kind::Page);
+    }
+
+    #[test]
+    fn deleted_index_pages_wait_90_days() {
+        let deleted = Some(State::Deleted);
+        assert_eq!(kind(Job::Succeeded, deleted, false, true), Kind::GoneIndex);
+        assert_eq!(kind(Job::Succeeded, deleted, false, false), Kind::Page);
+        assert_eq!(
+            kind(Job::Succeeded, Some(State::DeletionCandidate), false, true),
+            Kind::DeletionCandidate
+        );
+        assert_eq!(kind(Job::Blocked, deleted, false, true), Kind::Blocked);
+        assert_eq!(
+            Policy::default().bounds(Kind::GoneIndex),
+            Bounds::days(90, 90, 90)
+        );
+        assert_eq!(
+            next(
+                &Policy::default(),
+                ok(Kind::GoneIndex, Change::Changed),
+                0,
+                Some(d(3)),
+                0
+            )
+            .after,
+            d(90)
+        );
     }
 }

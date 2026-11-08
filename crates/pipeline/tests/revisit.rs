@@ -540,3 +540,53 @@ async fn a_redirected_page_with_the_same_body_is_not_a_change() {
     assert_eq!(resource.canonical_url, url("/new.html"));
     assert!(!links_of(&db, id).await.is_empty());
 }
+
+/// `role` を書き換える（`register` は既定の role で作る）
+async fn set_role(db: &DatabaseConnection, id: Uuid, role: &str) {
+    db.execute_raw(Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "UPDATE urls SET role = $1 WHERE id = $2",
+        [role.into(), id.into()],
+    ))
+    .await
+    .unwrap();
+}
+
+/// 一度取れてから404を3回続けて、資源を `deleted` にする（1回目で削除候補、続けて確かめられると `deleted`）
+async fn delete_by_not_found(db: &DatabaseConnection, id: Uuid) {
+    let (mode, fetcher) = switchable();
+    let fetcher = fetcher.await;
+    record_fetch(db, id, &get(&fetcher).await).await;
+    mode.store(2, Ordering::SeqCst);
+    for _ in 0..3 {
+        record_fetch(db, id, &get(&fetcher).await).await;
+    }
+    assert_eq!(only_resource(db).await.state, "deleted");
+}
+
+#[tokio::test]
+async fn deleted_index_url_waits_90_days() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let id = register(&db, &url("/a.html")).await;
+    set_role(&db, id, "index").await;
+
+    delete_by_not_found(&db, id).await;
+
+    assert_interval(&db, id, 90.0).await;
+}
+
+#[tokio::test]
+async fn deleted_seed_url_stays_within_the_page_bounds() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let id = register(&db, &url("/a.html")).await;
+    set_role(&db, id, "seed").await;
+
+    delete_by_not_found(&db, id).await;
+
+    let days = interval_days(&db, id).await.unwrap();
+    assert!((3.0..=14.0).contains(&days), "{days} 日");
+}
