@@ -85,6 +85,8 @@ pub struct Summary {
     pub lease_expired: usize,
     /// 見送ったホストの URL のうち、実行の終わりに時刻を先へそろえた数
     pub postponed: u64,
+    /// 一覧ページのリンクを入れ替えた数（Recorded::Saved の links_replaced）
+    pub links_replaced: usize,
 }
 
 /// 実行の設定の控え（`crawl_runs.config`）
@@ -252,8 +254,15 @@ pub async fn run(
                     summary.skipped_hosts.extend(flight.map(|flight| flight.host_key));
                 }
                 match done.recorded {
-                    Recorded::Saved { processed, .. } => {
+                    Recorded::Saved {
+                        processed,
+                        links_replaced,
+                        ..
+                    } => {
                         summary.saved += 1;
+                        if links_replaced {
+                            summary.links_replaced += 1;
+                        }
                         if let Some(resource_id) = processed.resource_id {
                             taken_resources.entry(resource_id).or_insert(done.url_id);
                         }
@@ -305,6 +314,7 @@ pub async fn run_recorded(
     let counters = Counters {
         retries: summary.retries as u64,
         lease_expired: summary.lease_expired as u64,
+        links_replaced: summary.links_replaced as u64,
     };
     let stats = run_report::collect(db, run_id, Some(counters))
         .await

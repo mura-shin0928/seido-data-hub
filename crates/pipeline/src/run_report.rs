@@ -1,5 +1,6 @@
 //! 実行1回分の集計を取得の履歴から数え、警告を判定して `crawl_runs` に残す。
 
+use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::Path;
 
@@ -9,12 +10,19 @@ use domain::run_report::{
 };
 use sea_orm::{ConnectionTrait, DbBackend, FromQueryResult, Statement, prelude::Uuid};
 
-/// 履歴の行を、取得した URL のホストとつないだもの
-const FROM_RUN: &str = "from fetch_history h join urls u on u.id = h.url_id where h.run_id = $1";
+/// 履歴の行を、取得した URL のホストとつないだもの。`index` が真なら一覧ページ（`role = 'index'`）だけ、
+/// 偽なら制度の URL（それ以外）だけにする
+fn from_run(index: bool) -> String {
+    let op = if index { "=" } else { "<>" };
+    format!(
+        "from fetch_history h join urls u on u.id = h.url_id \
+         where h.run_id = $1 and u.role {op} 'index'"
+    )
+}
 
 /// ホストの集計を取り出す（無ければ作る）。取得が1件も無いホストは入らない
-fn host_of<'a>(stats: &'a mut RunStats, host_key: &str) -> &'a mut HostStats {
-    stats.hosts.entry(host_key.to_string()).or_default()
+fn host_of<'a>(hosts: &'a mut BTreeMap<String, HostStats>, host_key: &str) -> &'a mut HostStats {
+    hosts.entry(host_key.to_string()).or_default()
 }
 
 #[derive(FromQueryResult)]
@@ -74,29 +82,27 @@ fn to_u64(n: i64) -> u64 {
     u64::try_from(n).unwrap_or(0)
 }
 
-/// `run_id` の実行の集計を履歴（`fetch_history`）と `urls` から数える。`counters` は渡したものをそのまま入れる
-pub async fn collect(
+/// ホストごとの集計を数える。`index` が真なら一覧ページだけ（`compared`・`changed` は数えない）、
+/// 偽なら制度の URL だけ
+async fn collect_hosts(
     db: &impl ConnectionTrait,
     run_id: Uuid,
-    counters: Option<Counters>,
-) -> anyhow::Result<RunStats> {
-    let mut stats = RunStats {
-        counters,
-        ..RunStats::default()
-    };
-
+    index: bool,
+) -> anyhow::Result<BTreeMap<String, HostStats>> {
+    let from_run = from_run(index);
+    let mut hosts = BTreeMap::new();
     let statuses = count_rows(
         db,
         run_id,
         &format!(
-            "select u.host_key, h.http_status::text as key, count(*) as n {FROM_RUN} \
+            "select u.host_key, h.http_status::text as key, count(*) as n {from_run} \
              and h.outcome = 'response' group by 1, 2"
         ),
     )
     .await?;
     for row in statuses {
         if let Some(status) = row.key.and_then(|k| k.parse::<u16>().ok()) {
-            host_of(&mut stats, &row.host_key)
+            host_of(&mut hosts, &row.host_key)
                 .statuses
                 .insert(status, to_u64(row.n));
         }
@@ -109,12 +115,12 @@ pub async fn collect(
             "select u.host_key, \
                     case when h.outcome = 'network' then 'network:' || split_part(h.error_detail, ':', 1) \
                          else h.outcome end as key, \
-                    count(*) as n {FROM_RUN} and h.outcome <> 'response' group by 1, 2"
+                    count(*) as n {from_run} and h.outcome <> 'response' group by 1, 2"
         ),
     )
     .await?;
     for row in stopped {
-        host_of(&mut stats, &row.host_key)
+        host_of(&mut hosts, &row.host_key)
             .stopped
             .insert(row.key.unwrap_or_default(), to_u64(row.n));
     }
@@ -123,13 +129,13 @@ pub async fn collect(
         db,
         run_id,
         &format!(
-            "select u.host_key, h.observation as key, count(*) as n {FROM_RUN} \
+            "select u.host_key, h.observation as key, count(*) as n {from_run} \
              and h.observation is not null group by 1, 2"
         ),
     )
     .await?;
     for row in observations {
-        host_of(&mut stats, &row.host_key)
+        host_of(&mut hosts, &row.host_key)
             .observations
             .insert(row.key.unwrap_or_default(), to_u64(row.n));
     }
@@ -138,7 +144,7 @@ pub async fn collect(
         DbBackend::Postgres,
         format!(
             "select u.host_key, coalesce(sum(h.bytes), 0)::bigint as bytes, \
-                    count(*) filter (where h.charset_replaced) as replaced {FROM_RUN} group by 1"
+                    count(*) filter (where h.charset_replaced) as replaced {from_run} group by 1"
         ),
         [run_id.into()],
     ))
@@ -146,9 +152,13 @@ pub async fn collect(
     .await
     .context("実行のバイト数を読めない")?;
     for row in totals {
-        let host = host_of(&mut stats, &row.host_key);
+        let host = host_of(&mut hosts, &row.host_key);
         host.bytes = to_u64(row.bytes);
         host.replaced = to_u64(row.replaced);
+    }
+
+    if index {
+        return Ok(hosts);
     }
 
     // 比べる相手は、別の実行で最後にハッシュを持った取得（304 はハッシュを持たないので飛ばされる）
@@ -164,7 +174,7 @@ pub async fn collect(
                  where p.url_id = h.url_id and p.run_id <> h.run_id and p.fetched_at < h.fetched_at \
                    and coalesce(p.body_hash, p.raw_hash) is not null \
                  order by p.fetched_at desc limit 1) prev on true \
-          where h.run_id = $1 and h.observation = 'alive' \
+          where h.run_id = $1 and u.role <> 'index' and h.observation = 'alive' \
             and (h.http_status = 304 or coalesce(h.body_hash, h.raw_hash) is not null) \
           group by 1",
         [run_id.into()],
@@ -173,10 +183,27 @@ pub async fn collect(
     .await
     .context("内容の変更を読めない")?;
     for row in compared {
-        let host = host_of(&mut stats, &row.host_key);
+        let host = host_of(&mut hosts, &row.host_key);
         host.compared = to_u64(row.compared);
         host.changed = to_u64(row.changed);
     }
+
+    Ok(hosts)
+}
+
+/// `run_id` の実行の集計を履歴（`fetch_history`）と `urls` から数える。`counters` は渡したものをそのまま入れる。
+/// ホストごとの集計は制度の URL（`hosts`）と一覧ページ（`index_hosts`）に分け、応答時間・failed_final・待ち行列は実行全体で数える
+pub async fn collect(
+    db: &impl ConnectionTrait,
+    run_id: Uuid,
+    counters: Option<Counters>,
+) -> anyhow::Result<RunStats> {
+    let mut stats = RunStats {
+        counters,
+        hosts: collect_hosts(db, run_id, false).await?,
+        index_hosts: collect_hosts(db, run_id, true).await?,
+        ..RunStats::default()
+    };
 
     let spread = SpreadRow::find_by_statement(Statement::from_sql_and_values(
         DbBackend::Postgres,
