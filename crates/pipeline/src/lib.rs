@@ -10,3 +10,4 @@ pub mod persist;
 pub mod resources;
 pub mod reviews;
 pub mod run_report;
+pub mod suggest_moves;

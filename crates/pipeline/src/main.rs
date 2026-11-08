@@ -15,6 +15,7 @@ use pipeline::fetch::{Body, Config, Fetcher, Outcome, Validators};
 use pipeline::reviews::{self, LinkReport, RegisterCounts};
 use pipeline::{
     host_moves, import_registry, index_pages, lifecycle, link_related, resources, run_report,
+    suggest_moves,
 };
 use sea_orm::prelude::Uuid;
 
@@ -92,6 +93,16 @@ enum Command {
         /// 移行先のホスト
         #[arg(long)]
         to: String,
+    },
+    /// 主たる URL が死んだ制度の移転先の候補を、一覧ページのリンクから作る（DATABASE_URL を使う。DB には書かない）。
+    /// 判定のファイルで確かめ済みの候補は外す。候補が出ても終了コードは0
+    SuggestMoves {
+        /// 判定のファイルのディレクトリ
+        #[arg(long, default_value = "data/reviews")]
+        reviews: PathBuf,
+        /// 候補を書く JSON のパス
+        #[arg(long, default_value = "move-candidates.json")]
+        out: PathBuf,
     },
 }
 
@@ -276,6 +287,16 @@ async fn main() -> anyhow::Result<()> {
                 anyhow::bail!("その移行は観測されていない: {from} → {to}");
             }
             println!("承認した: {from} → {to}");
+        }
+        Command::SuggestMoves { reviews, out } => {
+            let database_url = std::env::var("DATABASE_URL").context("DATABASE_URL が無い")?;
+            let db = sea_orm::Database::connect(&database_url).await?;
+            let judged = reviews::judged(&reviews::load_dir(&reviews)?);
+            let report = suggest_moves::suggest(&db, &judged).await?;
+            let json =
+                suggest_moves::candidates_json(&report, &suggest_moves::generated_at(&db).await?)?;
+            std::fs::write(&out, json).with_context(|| format!("{} に書けない", out.display()))?;
+            print_summary(&suggest_moves::markdown(&report));
         }
     }
     Ok(())
