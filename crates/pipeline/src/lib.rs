@@ -3,6 +3,7 @@ pub mod crawl;
 pub mod fetch;
 pub mod host_moves;
 pub mod import_registry;
+pub mod index_pages;
 pub mod lifecycle;
 pub mod link_related;
 pub mod persist;

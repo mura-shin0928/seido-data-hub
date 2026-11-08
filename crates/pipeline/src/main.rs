@@ -13,7 +13,9 @@ use domain::run_report::{Thresholds, render_markdown};
 use pipeline::crawl;
 use pipeline::fetch::{Body, Config, Fetcher, Outcome, Validators};
 use pipeline::reviews::{self, LinkReport, RegisterCounts};
-use pipeline::{host_moves, import_registry, lifecycle, link_related, resources, run_report};
+use pipeline::{
+    host_moves, import_registry, index_pages, lifecycle, link_related, resources, run_report,
+};
 use sea_orm::prelude::Uuid;
 
 #[derive(Parser)]
@@ -65,6 +67,9 @@ enum Command {
     /// 主たる URL が死んだ制度に、レジストリの行に書かれた同じサイトのページを関連 URL として結ぶ（DATABASE_URL を使う）。
     /// 1制度3件まで。巡回の前に流すと、続く巡回が生死を確かめる。何度流してもよい
     LinkRelated,
+    /// 制度の主たる URL の親ディレクトリを、一覧ページとして取る起点に登録する（DATABASE_URL を使う）。
+    /// 起点から外れた一覧ページは取らないようにし、戻ったものは再開する。巡回の前に流す。何度流してもよい
+    RegisterIndex,
     /// 人が判定した移転先（data/reviews/*.json）を DB に反映する（DATABASE_URL を使う）。
     /// register で候補の URL を登録し、crawl で取ったあと、link で反映する。何度流してもよい
     ApplyReviews {
@@ -214,6 +219,19 @@ async fn main() -> anyhow::Result<()> {
                     .collect();
                 println!("候補にしなかった URL: {}", dropped.join(" / "));
             }
+        }
+        Command::RegisterIndex => {
+            let database_url = std::env::var("DATABASE_URL").context("DATABASE_URL が無い")?;
+            let db = sea_orm::Database::connect(&database_url).await?;
+            let counts = index_pages::register(&db).await?;
+            print_summary(&format!(
+                "起点: {} 件 / URL 新規 {} 件・既存 {} 件 / 取らないようにした {} 件・戻した {} 件",
+                counts.starts,
+                counts.new_urls,
+                counts.existing_urls,
+                counts.parked,
+                counts.restored
+            ));
         }
         Command::ApplyReviews { step } => {
             let database_url = std::env::var("DATABASE_URL").context("DATABASE_URL が無い")?;
