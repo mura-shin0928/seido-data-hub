@@ -283,11 +283,12 @@ fn dry_run_mark(dry_run: bool) -> &'static str {
 
 fn register_markdown(counts: &RegisterCounts, dry_run: bool) -> String {
     format!(
-        "{}候補の URL: 新規 {} 件・既存 {} 件 / none {} 件\n",
+        "{}候補の URL: 新規 {} 件・既存 {} 件 / none {} 件 / ホスト移行の承認 {} 件\n",
         dry_run_mark(dry_run),
         counts.new_urls,
         counts.existing_urls,
-        counts.none
+        counts.none,
+        counts.approved_moves
     )
 }
 

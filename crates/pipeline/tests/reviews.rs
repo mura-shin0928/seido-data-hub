@@ -247,6 +247,82 @@ fn parse_accepts_spec_example() {
     assert_eq!(verdicts, [Verdict::Hit, Verdict::Index, Verdict::None]);
 }
 
+/// 制度の主たる URL を北区立図書館の旧ホストの URL に付け替え、その url_id を返す（資源は無い）
+async fn main_on_old_library(db: &DatabaseConnection, program: &Program) -> Uuid {
+    let url_id = common::register(db, OLD_LIB).await;
+    db.execute_raw(Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "update program_urls set url_id = $1 where program_id = $2 and role = 'main'",
+        [url_id.into(), program.id.into()],
+    ))
+    .await
+    .unwrap();
+    url_id
+}
+
+fn host_move_review(program: &Program) -> serde_json::Value {
+    serde_json::json!({
+        "program_id": program.id,
+        "dead_url": OLD_LIB,
+        "verdict": "hit",
+        "url": NEW_LIB,
+        "host_move": true,
+    })
+}
+
+#[tokio::test]
+async fn register_approves_the_host_move() {
+    let Some((db, _guard)) = common::fresh_db().await else {
+        return;
+    };
+    let programs = setup(&db).await;
+    main_on_old_library(&db, &programs[0]).await;
+    let counts = register(&db, &file(vec![host_move_review(&programs[0])]), false)
+        .await
+        .unwrap();
+    assert_eq!((counts.new_urls, counts.approved_moves), (1, 1));
+    assert_eq!(
+        count(
+            &db,
+            &format!(
+                "select count(*) from host_moves where from_host_key = 'https://www.library.city.kita.tokyo.jp' \
+                 and to_host_key = 'https://www.library.city.kita.lg.jp' and status = 'approved' \
+                 and sample_url = '{OLD_LIB}'"
+            )
+        )
+        .await,
+        1
+    );
+    assert!(
+        pipeline::crawl::allowed_hosts(&db)
+            .await
+            .unwrap()
+            .contains("https://www.library.city.kita.lg.jp")
+    );
+}
+
+#[tokio::test]
+async fn register_dry_run_does_not_approve() {
+    let Some((db, _guard)) = common::fresh_db().await else {
+        return;
+    };
+    let programs = setup(&db).await;
+    main_on_old_library(&db, &programs[0]).await;
+    let counts = register(&db, &file(vec![host_move_review(&programs[0])]), true)
+        .await
+        .unwrap();
+    assert_eq!(counts.approved_moves, 1);
+    assert_eq!(count(&db, "select count(*) from host_moves").await, 0);
+    assert_eq!(
+        count(
+            &db,
+            &format!("select count(*) from urls where normalized_url = '{NEW_LIB}'")
+        )
+        .await,
+        0
+    );
+}
+
 #[tokio::test]
 async fn register_inserts_candidates_once() {
     let Some((db, _guard)) = common::fresh_db().await else {
@@ -263,7 +339,8 @@ async fn register_inserts_candidates_once() {
         RegisterCounts {
             new_urls: 2,
             existing_urls: 0,
-            none: 0
+            none: 0,
+            approved_moves: 0
         }
     );
     let second = register(&db, &f, false).await.unwrap();

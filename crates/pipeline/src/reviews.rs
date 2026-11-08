@@ -22,6 +22,7 @@ use sea_orm::{
 };
 use serde::Deserialize;
 
+use crate::host_moves;
 use crate::link_related::RELATED_PRIORITY;
 
 #[derive(Debug, Deserialize)]
@@ -119,9 +120,12 @@ pub struct RegisterCounts {
     pub new_urls: usize,
     pub existing_urls: usize,
     pub none: usize,
+    /// 承認したホスト移行（`host_move` の判定ごとに1）
+    pub approved_moves: usize,
 }
 
-/// `hit`・`index` の候補の URL を `urls` に入れる。既にある行は触らない（巡回で進んだ状態を戻さないため）
+/// `hit`・`index` の候補の URL を `urls` に入れる。既にある行は触らない（巡回で進んだ状態を戻さないため）。
+/// `host_move` の判定は、その移行も承認する
 pub async fn register(
     db: &DatabaseConnection,
     file: &ReviewFile,
@@ -158,6 +162,13 @@ pub async fn register(
             counts.existing_urls += 1;
         } else {
             counts.new_urls += 1;
+        }
+        if review.host_move {
+            // 新しいホストが許可リストに加わる根拠として、人の承認を host_moves に残す（parse で同じパスと確かめてある）
+            let dead = prepare(&review.dead_url)?;
+            host_moves::approve_by_hand(&txn, &dead.host_key, &url.host_key, &review.dead_url)
+                .await?;
+            counts.approved_moves += 1;
         }
     }
     if dry_run {
