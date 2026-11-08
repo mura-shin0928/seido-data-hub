@@ -4,6 +4,8 @@
 //! `link` で、候補の資源が `active` なら反映する: `hit` はその制度の主たる URL を候補に差し替え、
 //! `index` は一覧ページを関連リンク（`source = 'discovered'`）として加える。`none` は記録だけで何もしない。
 //!
+//! `rejected` は、人に見せた候補のうち選ばなかった URL。`judged` が選んだ URL と合わせて「確かめ済み」の組にし、移転先の提案から外す。
+//!
 //! 差し替えは制度ごとの処理で、資源の状態には触らない。1つの古いページに複数の制度が載り、移転先が制度ごとに
 //! 分かれていることがあるので、元の URL を共有する制度を巻き込まない。
 //!
@@ -15,6 +17,7 @@
 //! 判定の後に状況が変わった件（主たる URL が変わった・生き返った・候補が取れない）は反映せずに `Refusal` で返す。
 
 use std::collections::BTreeSet;
+use std::path::Path;
 
 use anyhow::{Context, bail};
 use domain::urls::{PreparedUrl, prepare};
@@ -47,6 +50,9 @@ pub struct Review {
     /// このときだけ候補のホストが `dead_url` と違ってよく、`register` がその移行を承認する
     #[serde(default)]
     pub host_move: bool,
+    /// 人に見せた候補のうち選ばなかった URL（どの判定でも書ける）。ホスト移行の `hit` でも `dead_url` と同じホストに限る
+    #[serde(default)]
+    pub rejected: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -97,8 +103,18 @@ pub fn parse(json: &str) -> anyhow::Result<ReviewFile> {
             },
             (Verdict::None, None) => {}
         }
-        if let Err(e) = prepare(&review.dead_url) {
+        let dead = prepare(&review.dead_url);
+        if let Err(e) = &dead {
             errors.push(format!("{id}: dead_url を読めない（{e}）"));
+        }
+        for url in &review.rejected {
+            match (prepare(url), &dead) {
+                (Err(e), _) => errors.push(format!("{id}: rejected を読めない（{e}）: {url:?}")),
+                (Ok(candidate), Ok(dead)) if candidate.host_key != dead.host_key => errors.push(
+                    format!("{id}: rejected のホストが dead_url と違う: {url:?}"),
+                ),
+                _ => {}
+            }
         }
     }
     if !errors.is_empty() {
@@ -109,6 +125,43 @@ pub fn parse(json: &str) -> anyhow::Result<ReviewFile> {
         );
     }
     Ok(file)
+}
+
+/// `dir` 直下の `*.json` を名前の順に読む（下のディレクトリは読まない）。誤りにはファイル名を添える
+pub fn load_dir(dir: &Path) -> anyhow::Result<Vec<ReviewFile>> {
+    let mut paths = Vec::new();
+    for entry in std::fs::read_dir(dir).with_context(|| format!("{} を読めない", dir.display()))?
+    {
+        let path = entry?.path();
+        if path.is_file() && path.extension().is_some_and(|ext| ext == "json") {
+            paths.push(path);
+        }
+    }
+    paths.sort();
+    paths
+        .iter()
+        .map(|path| {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            let json =
+                std::fs::read_to_string(path).with_context(|| format!("{name} を読めない"))?;
+            parse(&json).with_context(|| name.to_string())
+        })
+        .collect()
+}
+
+/// 人が確かめ済みの（制度, `dedup_key`）の組。選んだ `url`（hit・index）と、選ばなかった `rejected` のすべて。
+/// `none` は `url` を持たないので、`rejected` が無ければ何も確かめ済みにしない。
+/// `parse` を通したファイルを渡す前提で、読めない URL は飛ばす
+pub fn judged(files: &[ReviewFile]) -> BTreeSet<(Uuid, String)> {
+    let mut set = BTreeSet::new();
+    for review in files.iter().flat_map(|file| &file.reviews) {
+        for url in review.url.iter().chain(&review.rejected) {
+            if let Ok(prepared) = prepare(url) {
+                set.insert((review.program_id, prepared.dedup_key));
+            }
+        }
+    }
+    set
 }
 
 /// ホストだけが変わったか（パスとクエリが同じ）。`domain::liveness` の移行の検出と同じ見方
@@ -633,4 +686,158 @@ async fn retire_if_unused(txn: &impl ConnectionTrait, url_id: Uuid) -> anyhow::R
         .await
         .context("元の URL を巡回から外せない")?;
     Ok(result.rows_affected() > 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MOVES: &str = include_str!("../../../data/reviews/2026-10-moves.json");
+    const ID1: &str = "00000000-0000-0000-0000-000000000001";
+    const ID2: &str = "00000000-0000-0000-0000-000000000002";
+
+    fn file(reviews: serde_json::Value) -> String {
+        serde_json::json!({ "reviewed_at": "2026-11-01", "reviews": reviews }).to_string()
+    }
+
+    #[test]
+    fn rejected_is_optional() {
+        let file = parse(MOVES).unwrap();
+        assert!(!file.reviews.is_empty());
+        assert!(file.reviews.iter().all(|r| r.rejected.is_empty()));
+    }
+
+    #[test]
+    fn rejected_is_validated() {
+        let json = file(serde_json::json!([{
+            "program_id": ID1, "dead_url": "https://a.example.jp/old.html",
+            "verdict": "none",
+            "rejected": ["not a url", "https://b.example.jp/x.html"]
+        }]));
+        let err = parse(&json).unwrap_err().to_string();
+        assert!(err.contains("誤りが 2 件"), "{err}");
+        assert!(
+            err.contains(&format!("{ID1}: rejected を読めない（")),
+            "{err}"
+        );
+        assert!(err.contains("\"not a url\""), "{err}");
+        assert!(
+            err.contains(&format!(
+                "{ID1}: rejected のホストが dead_url と違う: \"https://b.example.jp/x.html\""
+            )),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn host_move_rejected_must_match_dead_host() {
+        let json = file(serde_json::json!([{
+            "program_id": ID1, "dead_url": "https://a.example.jp/old.html",
+            "verdict": "hit", "host_move": true, "url": "https://b.example.jp/old.html",
+            "rejected": ["https://b.example.jp/other.html"]
+        }]));
+        let err = parse(&json).unwrap_err().to_string();
+        assert!(err.contains("rejected のホストが dead_url と違う"), "{err}");
+    }
+
+    fn judged_sample() -> Vec<ReviewFile> {
+        let json = file(serde_json::json!([
+            {
+                "program_id": ID1, "dead_url": "https://a.example.jp/old.html",
+                "verdict": "hit", "url": "https://a.example.jp/new.html",
+                "rejected": ["https://a.example.jp/x.html", "https://a.example.jp/y.html"]
+            },
+            {
+                "program_id": ID2, "dead_url": "https://a.example.jp/old2.html",
+                "verdict": "none", "rejected": ["https://a.example.jp/z.html"]
+            }
+        ]));
+        vec![parse(&json).unwrap()]
+    }
+
+    #[test]
+    fn judged_collects_url_and_rejected() {
+        let set = judged(&judged_sample());
+        let id1: Uuid = ID1.parse().unwrap();
+        let id2: Uuid = ID2.parse().unwrap();
+        let expected: BTreeSet<(Uuid, String)> = [
+            (id1, "https://a.example.jp/new.html"),
+            (id1, "https://a.example.jp/x.html"),
+            (id1, "https://a.example.jp/y.html"),
+            (id2, "https://a.example.jp/z.html"),
+        ]
+        .into_iter()
+        .map(|(id, url)| (id, prepare(url).unwrap().dedup_key))
+        .collect();
+        assert_eq!(set, expected);
+        assert_eq!(set.len(), 4);
+    }
+
+    #[test]
+    fn judged_uses_dedup_key() {
+        let json = file(serde_json::json!([
+            {
+                "program_id": ID1, "dead_url": "https://a.example.jp/old.html",
+                "verdict": "none", "rejected": ["https://a.example.jp/a.html#x"]
+            },
+            {
+                "program_id": ID2, "dead_url": "https://www.city.koganei.lg.jp/old.html",
+                "verdict": "none", "rejected": ["https://www.city.koganei.lg.jp/smph/a.html"]
+            }
+        ]));
+        let set = judged(&[parse(&json).unwrap()]);
+        let plain = prepare("https://a.example.jp/a.html").unwrap().dedup_key;
+        assert!(set.contains(&(ID1.parse().unwrap(), plain)));
+        // /smph/ はサイトの規則で畳まれ、PC 版の URL と同じ組になる
+        let pc = prepare("https://www.city.koganei.lg.jp/a.html")
+            .unwrap()
+            .dedup_key;
+        assert!(set.contains(&(ID2.parse().unwrap(), pc)));
+    }
+
+    #[test]
+    fn none_without_rejected_judges_nothing() {
+        let file = parse(MOVES).unwrap();
+        let none: Vec<&Review> = file
+            .reviews
+            .iter()
+            .filter(|r| r.verdict == Verdict::None)
+            .collect();
+        assert!(!none.is_empty());
+        let set = judged(std::slice::from_ref(&file));
+        for review in none {
+            assert!(set.iter().all(|(id, _)| *id != review.program_id));
+        }
+    }
+
+    #[test]
+    fn load_dir_reads_all_json() {
+        let dir = std::env::temp_dir().join(format!("reviews-load-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = file(serde_json::json!([]));
+        let b = serde_json::json!({ "reviewed_at": "2026-11-02", "reviews": [] }).to_string();
+        std::fs::write(dir.join("b.json"), b).unwrap();
+        std::fs::write(dir.join("a.json"), a).unwrap();
+        std::fs::write(dir.join("notes.txt"), "json ではない").unwrap();
+        let files = load_dir(&dir).unwrap();
+        assert_eq!(
+            files
+                .iter()
+                .map(|f| f.reviewed_at.as_str())
+                .collect::<Vec<_>>(),
+            ["2026-11-01", "2026-11-02"]
+        );
+        // 誤りにはファイル名を添える
+        std::fs::write(dir.join("c.json"), "{").unwrap();
+        let err = format!("{:#}", load_dir(&dir).unwrap_err());
+        assert!(err.contains("c.json"), "{err}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn load_dir_reads_repo_reviews() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/reviews");
+        assert_eq!(load_dir(&dir).unwrap().len(), 2);
+    }
 }
