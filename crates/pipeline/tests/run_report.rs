@@ -104,6 +104,21 @@ async fn statuses_observations_and_failures_are_counted_per_host() {
 }
 
 #[tokio::test]
+async fn retired_rows_are_not_counted_as_waiting() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    // 巡回から外した URL は、時刻が過去のままでも待ち行列に数えない
+    let retired = register(&db, &format!("http://{CITY}/old.html")).await;
+    set_status(&db, retired, "retired", "now() - interval '1 day'").await;
+    let run_id = start_run(&db).await;
+
+    let stats = run_report::collect(&db, run_id, None).await.unwrap();
+    assert_eq!(stats.queue_due, 0);
+    assert_eq!(stats.queue_oldest_wait_secs, None);
+}
+
+#[tokio::test]
 async fn a_later_run_counts_304s_and_changed_pages_against_the_last_hashed_fetch() {
     let Some((db, _guard)) = fresh_db().await else {
         return;

@@ -208,7 +208,7 @@ pub async fn collect(
         DbBackend::Postgres,
         "select count(*) as due, \
                 extract(epoch from now() - min(next_crawl_at))::bigint as oldest_wait_secs \
-           from urls where status <> 'processing' and next_crawl_at <= now()",
+           from urls where status not in ('processing', 'retired') and next_crawl_at <= now()",
     ))
     .one(db)
     .await
