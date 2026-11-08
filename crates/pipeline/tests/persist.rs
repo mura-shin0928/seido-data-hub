@@ -12,7 +12,7 @@ use common::*;
 use domain::change::Change;
 use domain::extract;
 use domain::schedule::Policy;
-use entity::{content_versions, fetch_history, resources, urls};
+use entity::{content_versions, fetch_history, page_links, resources, urls};
 use pipeline::fetch::{Body, Fetch, Fetcher, Hop, NetworkError, Outcome, Response};
 use pipeline::lifecycle::Context;
 use pipeline::persist::{Attempt, Recorded, record};
@@ -788,4 +788,228 @@ async fn soft_404s_and_top_redirects_are_told_apart_from_live_pages() {
     let forbidden = record_path(&db, &fetcher, "/forbidden.html").await;
     assert_eq!(forbidden.observation, None);
     assert_eq!(forbidden.error_type.as_deref(), Some("forbidden"));
+}
+
+/// `role` を書き換える（`register` は既定の role で作る）
+async fn set_role(db: &DatabaseConnection, id: Uuid, role: &str) {
+    db.execute_unprepared(&format!(
+        "update urls set role = '{role}' where id = '{id}'"
+    ))
+    .await
+    .unwrap();
+}
+
+/// 全資源の `page_links` を (url, text) の昇順で返す
+async fn stored_links(db: &DatabaseConnection) -> Vec<(String, String)> {
+    let mut rows: Vec<_> = page_links::Entity::find()
+        .all(db)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| (row.url, row.text))
+        .collect();
+    rows.sort();
+    rows
+}
+
+fn links_html(items: &[(&str, &str)]) -> String {
+    items
+        .iter()
+        .map(|(href, text)| format!(r#"<a href="{href}">{text}</a>"#))
+        .collect()
+}
+
+fn saved_links_replaced(recorded: Recorded) -> bool {
+    let Recorded::Saved { links_replaced, .. } = recorded else {
+        panic!("保存される");
+    };
+    links_replaced
+}
+
+#[tokio::test]
+async fn index_page_links_are_stored() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let html = links_html(&[
+        ("/a.html", "制度A"),
+        ("/b.html", "制度B"),
+        ("http://www.town.example.jp/c.html", "他のホスト"),
+    ]);
+    let fetcher = serve(move |_| body_page(&html)).await;
+    let id = register(&db, &url("/list.html")).await;
+    set_role(&db, id, "index").await;
+    let fetch = get(&fetcher, "/list.html").await;
+
+    let recorded = record_fetch(&db, start_run(&db).await, id, 0, &fetch).await;
+    assert!(saved_links_replaced(recorded));
+    assert_eq!(
+        stored_links(&db).await,
+        vec![
+            (url("/a.html"), "制度A".to_string()),
+            (url("/b.html"), "制度B".to_string()),
+        ]
+    );
+    let row = page_links::Entity::find().one(&db).await.unwrap().unwrap();
+    assert_eq!(
+        row.host_key,
+        domain::urls::prepare(&url("/a.html")).unwrap().host_key
+    );
+    assert_eq!(
+        row.dedup_key,
+        domain::urls::prepare(&row.url).unwrap().dedup_key
+    );
+}
+
+#[tokio::test]
+async fn links_replaced_only_when_hash_changes() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let current = Arc::new(std::sync::Mutex::new(links_html(&[
+        ("/a.html", "A"),
+        ("/b.html", "B"),
+    ])));
+    let fetcher = {
+        let current = current.clone();
+        serve(move |_| body_page(&current.lock().unwrap())).await
+    };
+    let id = register(&db, &url("/list.html")).await;
+    set_role(&db, id, "index").await;
+
+    let fetch = get(&fetcher, "/list.html").await;
+    assert!(saved_links_replaced(
+        record_fetch(&db, start_run(&db).await, id, 0, &fetch).await
+    ));
+    let first = stored_links(&db).await;
+    assert_eq!(first.len(), 2);
+
+    // 同じ HTML なら入れ替えない
+    let fetch = get(&fetcher, "/list.html").await;
+    assert!(!saved_links_replaced(
+        record_fetch(&db, start_run(&db).await, id, 0, &fetch).await
+    ));
+    assert_eq!(stored_links(&db).await, first);
+
+    // リンクが1件変われば入れ替わる
+    *current.lock().unwrap() = links_html(&[("/a.html", "A"), ("/c.html", "C")]);
+    let fetch = get(&fetcher, "/list.html").await;
+    assert!(saved_links_replaced(
+        record_fetch(&db, start_run(&db).await, id, 0, &fetch).await
+    ));
+    assert_eq!(
+        stored_links(&db).await,
+        vec![
+            (url("/a.html"), "A".to_string()),
+            (url("/c.html"), "C".to_string()),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn not_modified_keeps_links() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let html = links_html(&[("/a.html", "A")]);
+    let fetcher = serve(move |_| body_page(&html)).await;
+    let id = register(&db, &url("/list.html")).await;
+    set_role(&db, id, "index").await;
+    let fetch = get(&fetcher, "/list.html").await;
+    record_fetch(&db, start_run(&db).await, id, 0, &fetch).await;
+    let before = stored_links(&db).await;
+    assert_eq!(before.len(), 1);
+
+    let recorded = record_fetch(
+        &db,
+        start_run(&db).await,
+        id,
+        0,
+        &not_modified("/list.html"),
+    )
+    .await;
+    assert!(!saved_links_replaced(recorded));
+    assert_eq!(stored_links(&db).await, before);
+}
+
+#[tokio::test]
+async fn not_found_keeps_links() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let gone = Arc::new(AtomicBool::new(false));
+    let html = links_html(&[("/a.html", "A")]);
+    let fetcher = {
+        let gone = gone.clone();
+        serve(move |_| {
+            if gone.load(Ordering::SeqCst) {
+                empty(404)
+            } else {
+                body_page(&html)
+            }
+        })
+        .await
+    };
+    let id = register(&db, &url("/list.html")).await;
+    set_role(&db, id, "index").await;
+    let fetch = get(&fetcher, "/list.html").await;
+    record_fetch(&db, start_run(&db).await, id, 0, &fetch).await;
+    let before = stored_links(&db).await;
+    assert_eq!(before.len(), 1);
+
+    gone.store(true, Ordering::SeqCst);
+    let fetch = get(&fetcher, "/list.html").await;
+    let recorded = record_fetch(&db, start_run(&db).await, id, 0, &fetch).await;
+    assert!(!saved_links_replaced(recorded));
+    assert_eq!(stored_links(&db).await, before);
+}
+
+#[tokio::test]
+async fn seed_pages_store_no_links() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let html = links_html(&[("/a.html", "A")]);
+    let fetcher = serve(move |_| body_page(&html)).await;
+    let id = register(&db, &url("/list.html")).await;
+    set_role(&db, id, "seed").await;
+    let fetch = get(&fetcher, "/list.html").await;
+
+    let recorded = record_fetch(&db, start_run(&db).await, id, 0, &fetch).await;
+    assert!(!saved_links_replaced(recorded));
+    assert!(stored_links(&db).await.is_empty());
+}
+
+#[tokio::test]
+async fn links_written_when_resource_already_hashed_by_seed() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let html = links_html(&[("/a.html", "A")]);
+    let fetcher = serve(move |path| match path {
+        "/alias.html" => redirect(301, "/list.html"),
+        _ => body_page(&html),
+    })
+    .await;
+    let seed = register(&db, &url("/list.html")).await;
+    set_role(&db, seed, "seed").await;
+    let index = register(&db, &url("/alias.html")).await;
+    set_role(&db, index, "index").await;
+
+    // seed の URL で先に取る: links_hash は入るが行は無い
+    let fetch = get(&fetcher, "/list.html").await;
+    record_fetch(&db, start_run(&db).await, seed, 0, &fetch).await;
+    assert!(only_resource(&db).await.links_hash.is_some());
+    assert!(stored_links(&db).await.is_empty());
+
+    // 同じ資源に index の URL で着く: ハッシュは同じでも行が無いので入れる
+    let fetch = get(&fetcher, "/alias.html").await;
+    let recorded = record_fetch(&db, start_run(&db).await, index, 0, &fetch).await;
+    assert!(saved_links_replaced(recorded));
+    // 2つの URL は同じ資源に着いた
+    assert_eq!(all_resources(&db).await.len(), 1);
+    assert_eq!(
+        stored_links(&db).await,
+        vec![(url("/a.html"), "A".to_string())]
+    );
 }
