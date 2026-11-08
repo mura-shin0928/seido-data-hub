@@ -179,6 +179,7 @@ fn parse_rejects_bad_host_moves() {
         "00000000-0000-0000-0000-000000000012",
         "00000000-0000-0000-0000-000000000013",
         "00000000-0000-0000-0000-000000000014",
+        "00000000-0000-0000-0000-000000000015",
     ];
     let json = serde_json::json!({
         "reviewed_at": "2026-11-08",
@@ -195,6 +196,8 @@ fn parse_rejects_bad_host_moves() {
             // ホストが同じ
             { "program_id": ids[3], "dead_url": OLD_LIB, "verdict": "hit",
               "url": "https://www.library.city.kita.tokyo.jp/viewer/info.html?id=56", "host_move": true },
+            // none に付いている
+            { "program_id": ids[4], "dead_url": OLD_LIB, "verdict": "none", "host_move": true },
         ]
     });
     let err = parse(&json.to_string()).unwrap_err().to_string();
@@ -846,6 +849,27 @@ async fn host_move_replaces_a_main_url_that_never_had_a_resource() {
         .unwrap();
     assert_eq!((report.replaced, report.retired), (1, 1));
     assert!(report.refused.is_empty() && report.failed.is_empty());
+    assert_eq!(
+        main_of(&db, programs[0].id).await,
+        (NEW_LIB.to_string(), "discovered".to_string())
+    );
+    assert_eq!(status_of(&db, old).await, "retired");
+}
+
+#[tokio::test]
+async fn host_move_replaces_a_main_url_whose_resource_is_dead() {
+    let Some((db, _guard)) = common::fresh_db().await else {
+        return;
+    };
+    let programs = setup(&db).await;
+    let old = host_move_ready(&db, &programs).await;
+    // 旧ホストが一度は取れていて、その後 404 で消えた形
+    let dead = resource(&db, "deleted").await;
+    attach(&db, old, dead).await;
+    let report = link(&db, &file(vec![host_move_review(&programs[0])]), false)
+        .await
+        .unwrap();
+    assert_eq!((report.replaced, report.retired), (1, 1), "{report:?}");
     assert_eq!(
         main_of(&db, programs[0].id).await,
         (NEW_LIB.to_string(), "discovered".to_string())

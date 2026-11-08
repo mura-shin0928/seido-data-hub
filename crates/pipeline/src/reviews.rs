@@ -70,6 +70,9 @@ pub fn parse(json: &str) -> anyhow::Result<ReviewFile> {
         if !seen.insert(id) {
             errors.push(format!("{id}: 同じ制度が2回ある"));
         }
+        if review.host_move && review.verdict != Verdict::Hit {
+            errors.push(format!("{id}: ホスト移行は hit だけ"));
+        }
         match (review.verdict, &review.url) {
             (Verdict::Hit | Verdict::Index, None) => {
                 errors.push(format!("{id}: {:?} に url が無い", review.verdict))
@@ -77,10 +80,10 @@ pub fn parse(json: &str) -> anyhow::Result<ReviewFile> {
             (Verdict::None, Some(_)) => errors.push(format!("{id}: none に url がある")),
             (_, Some(url)) => match (prepare(url), prepare(&review.dead_url)) {
                 (Err(e), _) => errors.push(format!("{id}: url を読めない（{e}）: {url:?}")),
+                // hit でないホスト移行は上で拒んでいる
+                (Ok(_), Ok(_)) if review.host_move && review.verdict != Verdict::Hit => {}
                 (Ok(candidate), Ok(dead)) if review.host_move => {
-                    if review.verdict != Verdict::Hit {
-                        errors.push(format!("{id}: ホスト移行は hit だけ"));
-                    } else if candidate.host_key == dead.host_key {
+                    if candidate.host_key == dead.host_key {
                         errors.push(format!("{id}: ホスト移行なのにホストが同じ"));
                     } else if !same_path_and_query(&candidate, &dead) {
                         errors.push(format!("{id}: ホスト移行なのにパスかクエリが違う: {url:?}"));
