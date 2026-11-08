@@ -294,26 +294,51 @@ mod tests {
 
     #[test]
     fn rank_merges_same_url_from_two_pages() {
-        let links = [
-            link(
-                "https://h.jp/x.html",
-                "x",
-                "児童育成手当のご案内文書一覧",
-                "https://h.jp/p1/",
-            ),
-            link(
-                "https://h.jp/x.html",
-                "x",
-                "児童育成手当の案内",
-                "https://h.jp/p2/",
-            ),
-        ];
-        let r = rank(&["児童育成手当"], links, &BTreeSet::new());
-        assert_eq!(r.top.len(), 1);
-        assert_eq!(r.more, 0);
-        assert_eq!(r.top[0].text, "児童育成手当の案内");
-        assert_eq!(r.top[0].page, "https://h.jp/p2/");
-        assert_eq!(r.top[0].score, 1.0);
+        // 近さ 8/11（含まないが 0.6 以上）と 1.0 の2件。どの順に並べても近い方が残る
+        let far = link(
+            "https://h.jp/x.html",
+            "x",
+            "児童育成の手当",
+            "https://h.jp/p1/",
+        );
+        let near = link(
+            "https://h.jp/x.html",
+            "x",
+            "児童育成手当の案内",
+            "https://h.jp/p2/",
+        );
+        for links in [[far, near], [near, far]] {
+            let r = rank(&["児童育成手当"], links, &BTreeSet::new());
+            assert_eq!(r.top.len(), 1);
+            assert_eq!(r.more, 0);
+            assert_eq!(r.top[0].text, "児童育成手当の案内");
+            assert_eq!(r.top[0].page, "https://h.jp/p2/");
+            assert_eq!(r.top[0].score, 1.0);
+        }
+        let only_far = rank(&["児童育成手当"], [far], &BTreeSet::new());
+        assert!((only_far.top[0].score - 8.0 / 11.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn rank_merge_tie_prefers_smaller_url() {
+        let a = link(
+            "https://h.jp/a.html",
+            "k",
+            "児童育成手当",
+            "https://h.jp/p1/",
+        );
+        let b = link(
+            "https://h.jp/b.html",
+            "k",
+            "児童育成手当",
+            "https://h.jp/p2/",
+        );
+        for links in [[a, b], [b, a]] {
+            let r = rank(&["児童育成手当"], links, &BTreeSet::new());
+            assert_eq!(r.top.len(), 1);
+            assert_eq!(r.top[0].url, "https://h.jp/a.html");
+            assert_eq!(r.top[0].page, "https://h.jp/p1/");
+        }
     }
 
     #[test]
