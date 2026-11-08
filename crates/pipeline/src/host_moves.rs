@@ -1,6 +1,6 @@
 //! 許可リストの外へ動いたホストの記録と承認（§6 §17）。
 //!
-//! 自動では許可リストに入れない。人が確かめて `approve` したものだけが `approved_hosts` に出る。
+//! 自動では許可リストに入れない。人が確かめて `approve`・`approve_by_hand` したものだけが `approved_hosts` に出る。
 
 use std::collections::BTreeSet;
 
@@ -51,6 +51,35 @@ pub async fn approve(
         .await
         .context("host_moves を承認できない")?;
     Ok(result.rows_affected > 0)
+}
+
+/// 人が確かめた移行を承認する。観測していなくてもよい（旧ホストが消えた後は、転送はもう観測できない）。
+/// 行が無ければ承認済みで入れ、あれば承認にするだけ（最初に見た日時と例の URL は残す）
+pub async fn approve_by_hand(
+    db: &impl ConnectionTrait,
+    from_host_key: &str,
+    to_host_key: &str,
+    sample_url: &str,
+) -> anyhow::Result<()> {
+    host_moves::Entity::insert(host_moves::ActiveModel {
+        from_host_key: Set(from_host_key.to_string()),
+        to_host_key: Set(to_host_key.to_string()),
+        status: Set("approved".to_string()),
+        sample_url: Set(sample_url.to_string()),
+        ..Default::default()
+    })
+    .on_conflict(
+        OnConflict::columns([
+            host_moves::Column::FromHostKey,
+            host_moves::Column::ToHostKey,
+        ])
+        .value(host_moves::Column::Status, Expr::value("approved"))
+        .to_owned(),
+    )
+    .exec_without_returning(db)
+    .await
+    .context("host_moves を承認できない")?;
+    Ok(())
 }
 
 /// 許可リストに加えてよい、移行先のホスト

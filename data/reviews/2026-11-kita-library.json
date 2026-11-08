@@ -1,0 +1,12 @@
+{
+  "reviewed_at": "2026-11-08",
+  "reviews": [
+    {
+      "program_id": "80b693e7-42f4-439f-a6bc-c4c8dde26208",
+      "dead_url": "https://www.library.city.kita.tokyo.jp/viewer/info.html?id=8",
+      "verdict": "hit",
+      "url": "https://www.library.city.kita.lg.jp/viewer/info.html?id=8",
+      "host_move": true
+    }
+  ]
+}

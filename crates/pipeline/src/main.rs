@@ -283,22 +283,24 @@ fn dry_run_mark(dry_run: bool) -> &'static str {
 
 fn register_markdown(counts: &RegisterCounts, dry_run: bool) -> String {
     format!(
-        "{}候補の URL: 新規 {} 件・既存 {} 件 / none {} 件\n",
+        "{}候補の URL: 新規 {} 件・既存 {} 件 / none {} 件 / ホスト移行の承認 {} 件\n",
         dry_run_mark(dry_run),
         counts.new_urls,
         counts.existing_urls,
-        counts.none
+        counts.none,
+        counts.approved_moves
     )
 }
 
 fn link_markdown(report: &LinkReport, dry_run: bool) -> String {
     let mut out = format!(
-        "{}移転 {} 件 / 関連リンク {} 件 / 反映済み {} 件 / none {} 件 / 反映しなかった {} 件 / 書けなかった {} 件\n",
+        "{}移転 {} 件 / 関連リンク {} 件 / 反映済み {} 件 / none {} 件 / 巡回から外した元の URL {} 件 / 反映しなかった {} 件 / 書けなかった {} 件\n",
         dry_run_mark(dry_run),
         report.replaced,
         report.related,
         report.already,
         report.none,
+        report.retired,
         report.refused.len(),
         report.failed.len()
     );

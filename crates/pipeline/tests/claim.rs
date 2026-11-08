@@ -136,6 +136,23 @@ async fn rows_whose_time_has_not_come_are_left_alone() {
 }
 
 #[tokio::test]
+async fn retired_rows_are_never_candidates() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    // 巡回から外した URL は、時刻が過去でも取らない。同じホストの他の URL は取る
+    let retired = register(&db, &url("/old.html")).await;
+    let queued = register(&db, &url("/new.html")).await;
+    set_status(&db, retired, "retired", "now() - interval '1 day'").await;
+    set_status(&db, queued, "queued", "now() - interval '1 second'").await;
+
+    assert_eq!(
+        candidate_ids(&db, &Exclude::default()).await,
+        BTreeSet::from([queued])
+    );
+}
+
+#[tokio::test]
 async fn an_expired_lease_is_reclaimed_and_the_old_worker_is_refused() {
     let Some((db, _guard)) = fresh_db().await else {
         return;

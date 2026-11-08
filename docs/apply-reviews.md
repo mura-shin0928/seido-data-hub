@@ -43,6 +43,22 @@ GitHub Actions の `Apply reviews`（`.github/workflows/apply-reviews.yml`）を
 - 入れるのは URL・制度 id・判定だけ（ページの見出しや本文は入れない）
 - 誤りがあれば、DB に触る前に全件をまとめてエラーにする
 
+## ホスト移行として差し替える
+
+旧ホストが応答しなくなり、**同じパス・同じクエリのページが新しいホストにある**と人が確かめたときだけ、`hit` に `"host_move": true` を書く。
+
+```json
+{ "program_id": "…", "dead_url": "https://www.library.city.kita.tokyo.jp/viewer/info.html?id=8",
+  "verdict": "hit", "url": "https://www.library.city.kita.lg.jp/viewer/info.html?id=8", "host_move": true }
+```
+
+- ふだんの判定は、候補のホストが `dead_url` と違うと読む段階で拒む（候補を入れると、そのホストが巡回の許可リストに加わるため）。`host_move` はその例外で、`hit` だけに書ける。ホストが同じ・パスかクエリが違うものは拒む
+- `register` は候補の URL と一緒に、その移行を `host_moves` に承認（`approved`）として入れる。転送を観測していなくてよい（旧ホストが消えた後は、もう観測できない）。新しいホストは巡回の許可リストに加わる
+- **PR には確かめた根拠を書く**: 新しいホストの同じパスのページが開けること、タイトルが制度と合うこと、分かっていれば旧ホストがそこへ転送していたこと
+- `link` は、承認の行があるときだけ差し替える。旧ホストの URL は一度も取れておらず資源が無いことが多いので、元の資源が無くても差し替える（元の資源があれば、今までどおり `deleted`・`deletion_candidate` のときだけ）
+- 差し替えでどの制度からも使われなくなった元の URL は、`urls.status` を `retired` にする。`retired` の URL は巡回されず、実行サマリーの待ち行列にも数えない。行と取得の履歴は残る。別の制度がまだ使っている URL は、そのまま巡回する
+- 途中の `crawl` で旧ホストの URL も取られ、ホストごと見送りの警告でその段が失敗と表示されることがある。`link` はそのまま流れ、流し終えた後の巡回では旧ホストの URL は取られない
+
 ## 流し方
 
 1. 判定のファイルを PR にしてマージする
@@ -59,7 +75,9 @@ GitHub Actions の `Apply reviews`（`.github/workflows/apply-reviews.yml`）を
 
 ## 報告の読み方
 
-`link` は件数（移転・関連リンク・反映済み・none・反映しなかった・書けなかった）と、反映しなかった判定を理由ごとに出す。
+`register` は候補の URL の件数（新規・既存）・none・ホスト移行の承認の件数を出す。
+`link` は件数（移転・関連リンク・反映済み・none・巡回から外した元の URL・反映しなかった・書けなかった）と、反映しなかった判定を理由ごとに出す。
+「巡回から外した元の URL」は、ホスト移行で差し替えて `retired` にした URL の数。
 Actions では実行サマリーにも足す。書けなかった判定（DB のエラー）が1件でもあれば、終了コード1で終える。
 
 | 理由 | 意味 | どうするか |
@@ -70,6 +88,7 @@ Actions では実行サマリーにも足す。書けなかった判定（DB の
 | 元の資源が死んでいない | 主たる URL が生き返った、または巡回が転送で移した | 何もしない（判定の前提が崩れている） |
 | 候補の資源が moved | 候補のページ自体が、さらに転送されている | 転送先で判定し直す |
 | 候補の資源が元の資源と同じ | 候補が元の URL と同じページ | 判定の誤り。`none` にする |
+| ホスト移行が承認されていない | `host_move` の判定で、`host_moves` に承認の行が無い | 試し流しなら正常（`register` の書き込みを戻すため）。本番なら `register` が流れたかを確かめる |
 
 ## 誤った判定を戻す
 
@@ -78,6 +97,13 @@ Actions では実行サマリーにも足す。書けなかった判定（DB の
 ```sql
 UPDATE program_urls SET source = 'registry'
 WHERE program_id = '<制度の id>' AND role = 'main';
+```
+
+ホスト移行で差し替えた制度は、上のあとで、巡回から外した元の URL も戻す（`dead_url` の値で引く）。新しいホストの承認（`host_moves` の行）は残しても害は無い。
+
+```sql
+UPDATE urls SET status = 'failed_final', next_crawl_at = now()
+WHERE normalized_url = '<dead_url>' AND status = 'retired';
 ```
 
 `index` で足した関連リンクは、その行を消す（`DELETE FROM program_urls WHERE program_id = '<制度の id>' AND url_id = '<URL の id>'`）。

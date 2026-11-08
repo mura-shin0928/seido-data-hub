@@ -5,6 +5,7 @@
 
 mod common;
 
+use pipeline::claim::{self, Exclude};
 use pipeline::import_registry::import;
 use pipeline::reviews::{
     LinkReport, RefuseReason, RegisterCounts, ReviewFile, Verdict, link, parse, register,
@@ -155,6 +156,57 @@ fn file(reviews: Vec<serde_json::Value>) -> ReviewFile {
 const HIT: &str = "https://www.city.example.jp/kosodate/new.html";
 const LIST: &str = "https://www.city.example.jp/kosodate/";
 
+const OLD_LIB: &str = "https://www.library.city.kita.tokyo.jp/viewer/info.html?id=8";
+const NEW_LIB: &str = "https://www.library.city.kita.lg.jp/viewer/info.html?id=8";
+
+#[test]
+fn parse_accepts_a_host_move_with_the_same_path() {
+    let json = serde_json::json!({
+        "reviewed_at": "2026-11-08",
+        "reviews": [
+            { "program_id": "00000000-0000-0000-0000-000000000001", "dead_url": OLD_LIB,
+              "verdict": "hit", "url": NEW_LIB, "host_move": true },
+        ]
+    });
+    let file = parse(&json.to_string()).unwrap();
+    assert!(file.reviews[0].host_move);
+}
+
+#[test]
+fn parse_rejects_bad_host_moves() {
+    let ids = [
+        "00000000-0000-0000-0000-000000000011",
+        "00000000-0000-0000-0000-000000000012",
+        "00000000-0000-0000-0000-000000000013",
+        "00000000-0000-0000-0000-000000000014",
+        "00000000-0000-0000-0000-000000000015",
+    ];
+    let json = serde_json::json!({
+        "reviewed_at": "2026-11-08",
+        "reviews": [
+            // クエリが違う
+            { "program_id": ids[0], "dead_url": OLD_LIB, "verdict": "hit",
+              "url": "https://www.library.city.kita.lg.jp/viewer/info.html?id=9", "host_move": true },
+            // パスが違う
+            { "program_id": ids[1], "dead_url": OLD_LIB, "verdict": "hit",
+              "url": "https://www.library.city.kita.lg.jp/0003/info-0000000008-0.html", "host_move": true },
+            // hit でない
+            { "program_id": ids[2], "dead_url": OLD_LIB, "verdict": "index",
+              "url": NEW_LIB, "host_move": true },
+            // ホストが同じ
+            { "program_id": ids[3], "dead_url": OLD_LIB, "verdict": "hit",
+              "url": "https://www.library.city.kita.tokyo.jp/viewer/info.html?id=56", "host_move": true },
+            // none に付いている
+            { "program_id": ids[4], "dead_url": OLD_LIB, "verdict": "none", "host_move": true },
+        ]
+    });
+    let err = parse(&json.to_string()).unwrap_err().to_string();
+    for id in ids {
+        assert!(err.contains(id), "{id} が無い: {err}");
+    }
+    assert!(err.contains("ホスト移行"), "{err}");
+}
+
 #[test]
 fn parse_rejects_malformed() {
     let ids = [
@@ -199,6 +251,82 @@ fn parse_accepts_spec_example() {
     assert_eq!(verdicts, [Verdict::Hit, Verdict::Index, Verdict::None]);
 }
 
+/// 制度の主たる URL を北区立図書館の旧ホストの URL に付け替え、その url_id を返す（資源は無い）
+async fn main_on_old_library(db: &DatabaseConnection, program: &Program) -> Uuid {
+    let url_id = common::register(db, OLD_LIB).await;
+    db.execute_raw(Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "update program_urls set url_id = $1 where program_id = $2 and role = 'main'",
+        [url_id.into(), program.id.into()],
+    ))
+    .await
+    .unwrap();
+    url_id
+}
+
+fn host_move_review(program: &Program) -> serde_json::Value {
+    serde_json::json!({
+        "program_id": program.id,
+        "dead_url": OLD_LIB,
+        "verdict": "hit",
+        "url": NEW_LIB,
+        "host_move": true,
+    })
+}
+
+#[tokio::test]
+async fn register_approves_the_host_move() {
+    let Some((db, _guard)) = common::fresh_db().await else {
+        return;
+    };
+    let programs = setup(&db).await;
+    main_on_old_library(&db, &programs[0]).await;
+    let counts = register(&db, &file(vec![host_move_review(&programs[0])]), false)
+        .await
+        .unwrap();
+    assert_eq!((counts.new_urls, counts.approved_moves), (1, 1));
+    assert_eq!(
+        count(
+            &db,
+            &format!(
+                "select count(*) from host_moves where from_host_key = 'https://www.library.city.kita.tokyo.jp' \
+                 and to_host_key = 'https://www.library.city.kita.lg.jp' and status = 'approved' \
+                 and sample_url = '{OLD_LIB}'"
+            )
+        )
+        .await,
+        1
+    );
+    assert!(
+        pipeline::crawl::allowed_hosts(&db)
+            .await
+            .unwrap()
+            .contains("https://www.library.city.kita.lg.jp")
+    );
+}
+
+#[tokio::test]
+async fn register_dry_run_does_not_approve() {
+    let Some((db, _guard)) = common::fresh_db().await else {
+        return;
+    };
+    let programs = setup(&db).await;
+    main_on_old_library(&db, &programs[0]).await;
+    let counts = register(&db, &file(vec![host_move_review(&programs[0])]), true)
+        .await
+        .unwrap();
+    assert_eq!(counts.approved_moves, 1);
+    assert_eq!(count(&db, "select count(*) from host_moves").await, 0);
+    assert_eq!(
+        count(
+            &db,
+            &format!("select count(*) from urls where normalized_url = '{NEW_LIB}'")
+        )
+        .await,
+        0
+    );
+}
+
 #[tokio::test]
 async fn register_inserts_candidates_once() {
     let Some((db, _guard)) = common::fresh_db().await else {
@@ -215,7 +343,8 @@ async fn register_inserts_candidates_once() {
         RegisterCounts {
             new_urls: 2,
             existing_urls: 0,
-            none: 0
+            none: 0,
+            approved_moves: 0
         }
     );
     let second = register(&db, &f, false).await.unwrap();
@@ -674,5 +803,213 @@ async fn replaced_main_survives_import_and_can_be_undone() {
     assert_eq!(
         main_of(&db, programs[0].id).await,
         (programs[0].main_url.clone(), "registry".to_string())
+    );
+}
+
+/// ホスト移行の判定の前提: 主たる URL を旧ホストに付け替え、register で承認し、新ホストの URL に active の資源を付ける。
+/// 元の URL の url_id を返す
+async fn host_move_ready(db: &DatabaseConnection, programs: &[Program]) -> Uuid {
+    let old = main_on_old_library(db, &programs[0]).await;
+    register(db, &file(vec![host_move_review(&programs[0])]), false)
+        .await
+        .unwrap();
+    let new = query_uuid(
+        db,
+        "select id from urls where normalized_url = $1",
+        vec![NEW_LIB.into()],
+    )
+    .await;
+    let resource_id = resource(db, "active").await;
+    attach(db, new, resource_id).await;
+    old
+}
+
+async fn status_of(db: &DatabaseConnection, url_id: Uuid) -> String {
+    db.query_one_raw(Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "select status from urls where id = $1",
+        [url_id.into()],
+    ))
+    .await
+    .unwrap()
+    .unwrap()
+    .try_get_by_index(0)
+    .unwrap()
+}
+
+#[tokio::test]
+async fn host_move_replaces_a_main_url_that_never_had_a_resource() {
+    let Some((db, _guard)) = common::fresh_db().await else {
+        return;
+    };
+    let programs = setup(&db).await;
+    let old = host_move_ready(&db, &programs).await;
+    let report = link(&db, &file(vec![host_move_review(&programs[0])]), false)
+        .await
+        .unwrap();
+    assert_eq!((report.replaced, report.retired), (1, 1));
+    assert!(report.refused.is_empty() && report.failed.is_empty());
+    assert_eq!(
+        main_of(&db, programs[0].id).await,
+        (NEW_LIB.to_string(), "discovered".to_string())
+    );
+    assert_eq!(status_of(&db, old).await, "retired");
+}
+
+#[tokio::test]
+async fn host_move_replaces_a_main_url_whose_resource_is_dead() {
+    let Some((db, _guard)) = common::fresh_db().await else {
+        return;
+    };
+    let programs = setup(&db).await;
+    let old = host_move_ready(&db, &programs).await;
+    // 旧ホストが一度は取れていて、その後 404 で消えた形
+    let dead = resource(&db, "deleted").await;
+    attach(&db, old, dead).await;
+    let report = link(&db, &file(vec![host_move_review(&programs[0])]), false)
+        .await
+        .unwrap();
+    assert_eq!((report.replaced, report.retired), (1, 1), "{report:?}");
+    assert_eq!(
+        main_of(&db, programs[0].id).await,
+        (NEW_LIB.to_string(), "discovered".to_string())
+    );
+    assert_eq!(status_of(&db, old).await, "retired");
+}
+
+#[tokio::test]
+async fn host_move_without_approval_is_refused() {
+    let Some((db, _guard)) = common::fresh_db().await else {
+        return;
+    };
+    let programs = setup(&db).await;
+    main_on_old_library(&db, &programs[0]).await;
+    // register を流さずに、候補だけ取れている
+    candidate(&db, NEW_LIB, "active").await;
+    let f = file(vec![host_move_review(&programs[0])]);
+    assert_eq!(refusal(&db, &f).await, RefuseReason::HostMoveNotApproved);
+    assert_eq!(
+        main_of(&db, programs[0].id).await,
+        (OLD_LIB.to_string(), "registry".to_string())
+    );
+}
+
+#[tokio::test]
+async fn host_move_refused_when_old_main_came_back() {
+    let Some((db, _guard)) = common::fresh_db().await else {
+        return;
+    };
+    let programs = setup(&db).await;
+    let old = host_move_ready(&db, &programs).await;
+    let revived = resource(&db, "active").await;
+    attach(&db, old, revived).await;
+    let report = link(&db, &file(vec![host_move_review(&programs[0])]), false)
+        .await
+        .unwrap();
+    assert_eq!(report.retired, 0);
+    assert_eq!(
+        report
+            .refused
+            .iter()
+            .map(|r| r.reason.clone())
+            .collect::<Vec<_>>(),
+        vec![RefuseReason::MainNotDead("active".to_string())]
+    );
+    assert_ne!(status_of(&db, old).await, "retired");
+}
+
+#[tokio::test]
+async fn host_move_keeps_crawling_a_url_still_used_elsewhere() {
+    let Some((db, _guard)) = common::fresh_db().await else {
+        return;
+    };
+    let programs = setup(&db).await;
+    let old = host_move_ready(&db, &programs).await;
+    db.execute_raw(Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "insert into program_urls (program_id, url_id, role, rank, source) \
+         values ($1, $2, 'related', 1, 'registry')",
+        [programs[1].id.into(), old.into()],
+    ))
+    .await
+    .unwrap();
+    let report = link(&db, &file(vec![host_move_review(&programs[0])]), false)
+        .await
+        .unwrap();
+    assert_eq!((report.replaced, report.retired), (1, 0));
+    assert_eq!(main_of(&db, programs[0].id).await.0, NEW_LIB);
+    assert_ne!(status_of(&db, old).await, "retired");
+}
+
+#[tokio::test]
+async fn host_move_twice_is_already() {
+    let Some((db, _guard)) = common::fresh_db().await else {
+        return;
+    };
+    let programs = setup(&db).await;
+    let old = host_move_ready(&db, &programs).await;
+    let f = file(vec![host_move_review(&programs[0])]);
+    link(&db, &f, false).await.unwrap();
+    let second = link(&db, &f, false).await.unwrap();
+    assert_eq!((second.already, second.replaced, second.retired), (1, 0, 0));
+    assert!(second.refused.is_empty() && second.failed.is_empty());
+    assert_eq!(status_of(&db, old).await, "retired");
+}
+
+#[tokio::test]
+async fn host_move_link_dry_run_writes_nothing() {
+    let Some((db, _guard)) = common::fresh_db().await else {
+        return;
+    };
+    let programs = setup(&db).await;
+    let old = host_move_ready(&db, &programs).await;
+    let before = status_of(&db, old).await;
+    let report = link(&db, &file(vec![host_move_review(&programs[0])]), true)
+        .await
+        .unwrap();
+    assert_eq!((report.replaced, report.retired), (1, 1));
+    assert_eq!(
+        main_of(&db, programs[0].id).await,
+        (OLD_LIB.to_string(), "registry".to_string())
+    );
+    assert_eq!(status_of(&db, old).await, before);
+}
+
+#[tokio::test]
+async fn retired_old_url_is_not_crawled() {
+    let Some((db, _guard)) = common::fresh_db().await else {
+        return;
+    };
+    let programs = setup(&db).await;
+    let old = host_move_ready(&db, &programs).await;
+    link(&db, &file(vec![host_move_review(&programs[0])]), false)
+        .await
+        .unwrap();
+    db.execute_raw(Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "update urls set next_crawl_at = now() - interval '1 day' where id = $1",
+        [old.into()],
+    ))
+    .await
+    .unwrap();
+    let candidates = claim::candidates(&db, &Exclude::default(), std::time::Duration::ZERO)
+        .await
+        .unwrap();
+    assert!(candidates.iter().all(|c| c.url_id != old));
+}
+
+#[test]
+fn the_kita_library_review_file_parses() {
+    let file = parse(include_str!(
+        "../../../data/reviews/2026-11-kita-library.json"
+    ))
+    .unwrap();
+    assert_eq!(file.reviews.len(), 1);
+    let review = &file.reviews[0];
+    assert_eq!(review.verdict, Verdict::Hit);
+    assert!(review.host_move);
+    assert_eq!(
+        review.program_id.to_string(),
+        "80b693e7-42f4-439f-a6bc-c4c8dde26208"
     );
 }

@@ -56,6 +56,7 @@ pub struct Exclude {
 /// - 時刻: `next_crawl_at` が now + 幅 までに来る行、または lease の切れた `processing`。
 ///   `retry_wait` は幅を当てず、時刻どおり（先取りでバックオフと `Retry-After` を縮めない）
 /// - ホスト: 同じホストに有効な lease の `processing` が無いこと
+/// - `retired`（巡回から外した URL）は時刻によらず取らない
 fn claimable(due: Option<Duration>) -> String {
     let time = match due {
         // 秒は整数なので、そのまま SQL に埋める
@@ -69,7 +70,7 @@ fn claimable(due: Option<Duration>) -> String {
         None => "TRUE".to_string(),
     };
     format!(
-        "{time} AND NOT EXISTS (\
+        "u.status <> 'retired' AND {time} AND NOT EXISTS (\
             SELECT 1 FROM urls live \
             WHERE live.host_key = u.host_key \
               AND live.status = 'processing' AND live.lease_until >= now())"
