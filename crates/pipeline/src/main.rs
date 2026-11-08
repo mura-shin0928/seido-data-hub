@@ -294,12 +294,13 @@ fn register_markdown(counts: &RegisterCounts, dry_run: bool) -> String {
 
 fn link_markdown(report: &LinkReport, dry_run: bool) -> String {
     let mut out = format!(
-        "{}移転 {} 件 / 関連リンク {} 件 / 反映済み {} 件 / none {} 件 / 反映しなかった {} 件 / 書けなかった {} 件\n",
+        "{}移転 {} 件 / 関連リンク {} 件 / 反映済み {} 件 / none {} 件 / 巡回から外した元の URL {} 件 / 反映しなかった {} 件 / 書けなかった {} 件\n",
         dry_run_mark(dry_run),
         report.replaced,
         report.related,
         report.already,
         report.none,
+        report.retired,
         report.refused.len(),
         report.failed.len()
     );

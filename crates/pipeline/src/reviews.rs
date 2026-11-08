@@ -7,6 +7,10 @@
 //! 差し替えは制度ごとの処理で、資源の状態には触らない。1つの古いページに複数の制度が載り、移転先が制度ごとに
 //! 分かれていることがあるので、元の URL を共有する制度を巻き込まない。
 //!
+//! ホスト移行の `hit`（`host_move`）は、旧ホストが消えて同じパスのページが別のホストにあると人が確かめたもの。
+//! `register` がその移行を `host_moves` に承認として残し、`link` は承認があるときだけ、元の資源が無くても差し替える。
+//! 差し替えでどの制度からも使われなくなった元の URL は `retired` にして、巡回から外す。
+//!
 //! 1件ずつのトランザクションで書く。`dry_run` は同じ処理を流して最後に戻す（数える処理を別に持たない）。
 //! 判定の後に状況が変わった件（主たる URL が変わった・生き返った・候補が取れない）は反映せずに `Refusal` で返す。
 
@@ -193,6 +197,8 @@ pub enum RefuseReason {
     TargetMoved,
     /// hit で、元の資源と候補の資源が同じ
     SameResource,
+    /// ホスト移行の判定で、その移行が host_moves で承認されていない（register を流していない）
+    HostMoveNotApproved,
 }
 
 impl RefuseReason {
@@ -204,6 +210,7 @@ impl RefuseReason {
             Self::MainNotDead(state) => format!("元の資源が死んでいない（{state}）"),
             Self::TargetMoved => "候補の資源が moved".to_string(),
             Self::SameResource => "候補の資源が元の資源と同じ".to_string(),
+            Self::HostMoveNotApproved => "ホスト移行が承認されていない".to_string(),
         }
     }
 }
@@ -223,15 +230,22 @@ pub struct LinkReport {
     /// 既に反映してあった（もう一度流したとき）
     pub already: usize,
     pub none: usize,
+    /// ホスト移行で差し替え、どの制度からも使われなくなって巡回から外した元の URL
+    pub retired: usize,
     pub refused: Vec<Refusal>,
     /// DB のエラー（program_id と内容）
     pub failed: Vec<(Uuid, String)>,
 }
 
 enum Linked {
-    Replaced,
+    /// `retired`: 元の URL を巡回から外した（ホスト移行のときだけ）
+    Replaced {
+        retired: bool,
+    },
     Related,
-    Already,
+    Already {
+        retired: bool,
+    },
     Refused(RefuseReason),
 }
 
@@ -266,9 +280,15 @@ async fn link_all<C: TransactionTrait>(
         };
         // 始める・確定するところの失敗も、その件の失敗として積んで続ける（それまでに反映した件の報告を残すため）
         match link_in_txn(db, review, &url).await {
-            Ok(Linked::Replaced) => report.replaced += 1,
+            Ok(Linked::Replaced { retired }) => {
+                report.replaced += 1;
+                report.retired += usize::from(retired);
+            }
             Ok(Linked::Related) => report.related += 1,
-            Ok(Linked::Already) => report.already += 1,
+            Ok(Linked::Already { retired }) => {
+                report.already += 1;
+                report.retired += usize::from(retired);
+            }
             Ok(Linked::Refused(reason)) => report.refused.push(Refusal {
                 program_id: review.program_id,
                 url: url.normalized_url.clone(),
@@ -361,12 +381,26 @@ async fn link_one(
         return refused(RefuseReason::MainChanged);
     };
     let main_url_id: Uuid = main.try_get_by_index(0)?;
+    if review.host_move {
+        return link_host_move(
+            txn,
+            review,
+            url,
+            candidate_url_id,
+            MainUrl {
+                id: main_url_id,
+                normalized_url: main.try_get_by_index(1)?,
+                source: main.try_get_by_index(2)?,
+            },
+        )
+        .await;
+    }
     // 候補が元の URL そのものの判定は、差し替え済みではない（下の SameResource で止まる）
     if review.verdict == Verdict::Hit
         && candidate_url_id == Some(main_url_id)
         && main.try_get_by_index::<String>(2)? == "discovered"
     {
-        return Ok(Linked::Already);
+        return Ok(Linked::Already { retired: false });
     }
     if main.try_get_by_index::<String>(1)? != prepare(&review.dead_url)?.normalized_url {
         return refused(RefuseReason::MainChanged);
@@ -402,7 +436,7 @@ async fn link_one(
         .await?
         .is_some();
     if review.verdict == Verdict::Index && exists {
-        return Ok(Linked::Already);
+        return Ok(Linked::Already { retired: false });
     }
     if !matches!(old.state.as_str(), "deleted" | "deletion_candidate") {
         return refused(RefuseReason::MainNotDead(old.state));
@@ -440,7 +474,7 @@ async fn link_one(
             if updated.rows_affected() == 0 {
                 bail!("主たる URL を差し替える直前に元の資源の状態が変わった");
             }
-            Ok(Linked::Replaced)
+            Ok(Linked::Replaced { retired: false })
         }
         Verdict::Index => {
             let rank: i32 = txn
@@ -467,4 +501,133 @@ async fn link_one(
         }
         Verdict::None => unreachable!("none は candidate_of で除いている"),
     }
+}
+
+/// 制度のいまの主たる URL
+struct MainUrl {
+    id: Uuid,
+    normalized_url: String,
+    source: String,
+}
+
+/// ホスト移行の `hit`。承認済みの移行に限り、別のホストの候補で差し替える。
+/// 元の資源が無くても（旧ホストが消えてから一度も取れていない）差し替え、使われなくなった元の URL を巡回から外す
+async fn link_host_move(
+    txn: &impl ConnectionTrait,
+    review: &Review,
+    url: &PreparedUrl,
+    candidate_url_id: Option<Uuid>,
+    main: MainUrl,
+) -> anyhow::Result<Linked> {
+    let refused = |reason| Ok(Linked::Refused(reason));
+    let dead = prepare(&review.dead_url)?;
+
+    let approved = txn
+        .query_one_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "SELECT 1 FROM host_moves WHERE from_host_key = $1 AND to_host_key = $2 AND status = 'approved'",
+            [dead.host_key.clone().into(), url.host_key.clone().into()],
+        ))
+        .await?
+        .is_some();
+    if !approved {
+        return refused(RefuseReason::HostMoveNotApproved);
+    }
+
+    // もう一度流したとき: 差し替えは済んでいる。元の URL を外しそびれていれば外す
+    if candidate_url_id == Some(main.id) && main.source == "discovered" {
+        let old_url_id: Option<Uuid> = txn
+            .query_one_raw(Statement::from_sql_and_values(
+                DbBackend::Postgres,
+                "SELECT id FROM urls WHERE dedup_key = $1",
+                [dead.dedup_key.clone().into()],
+            ))
+            .await?
+            .map(|row| row.try_get_by_index(0))
+            .transpose()?;
+        let retired = match old_url_id {
+            Some(id) => retire_if_unused(txn, id).await?,
+            None => false,
+        };
+        return Ok(Linked::Already { retired });
+    }
+    if main.normalized_url != dead.normalized_url {
+        return refused(RefuseReason::MainChanged);
+    }
+
+    let Some(candidate_url_id) = candidate_url_id else {
+        return refused(RefuseReason::NoResource);
+    };
+    let Some(target) = current(txn, candidate_url_id).await? else {
+        return refused(RefuseReason::NoResource);
+    };
+    if target.state == "moved" {
+        return refused(RefuseReason::TargetMoved);
+    }
+    if target.state != "active" {
+        return refused(RefuseReason::NotActive(target.state));
+    }
+    let old = current(txn, main.id).await?;
+    if let Some(old) = &old {
+        if old.id == target.id {
+            return refused(RefuseReason::SameResource);
+        }
+        if !matches!(old.state.as_str(), "deleted" | "deletion_candidate") {
+            return refused(RefuseReason::MainNotDead(old.state.clone()));
+        }
+    }
+
+    // 候補がその制度の関連 URL にもあれば、主キーが重なるので関連の行を消す
+    txn.execute_raw(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        "DELETE FROM program_urls WHERE program_id = $1 AND url_id = $2 AND role = 'related'",
+        [review.program_id.into(), candidate_url_id.into()],
+    ))
+    .await
+    .context("候補の関連リンクを消せない")?;
+    // 読んでから書くまでに元の URL の資源が変わっていたら書かない（無いまま、または同じ資源が死んだまま）
+    let guard = match &old {
+        None => "NOT EXISTS (SELECT 1 FROM url_resources WHERE url_id = $3)",
+        Some(_) => {
+            "EXISTS (SELECT 1 FROM resources WHERE id = $4 AND state IN ('deleted', 'deletion_candidate'))"
+        }
+    };
+    let old_id = old.as_ref().map(|old| old.id);
+    let updated = txn
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            format!(
+                "UPDATE program_urls SET url_id = $1, source = 'discovered' \
+                 WHERE program_id = $2 AND role = 'main' AND url_id = $3 AND {guard}"
+            ),
+            [
+                candidate_url_id.into(),
+                review.program_id.into(),
+                main.id.into(),
+                old_id.into(),
+            ],
+        ))
+        .await
+        .context("主たる URL を差し替えられない")?;
+    if updated.rows_affected() == 0 {
+        bail!("主たる URL を差し替える直前に元の資源の状態が変わった");
+    }
+    let retired = retire_if_unused(txn, main.id).await?;
+    Ok(Linked::Replaced { retired })
+}
+
+/// どの制度にも使われていない URL を巡回から外す（`retired`）。外したら true。
+/// 巡回が取っている最中（`processing`）なら外さず、次に流したときに外す
+async fn retire_if_unused(txn: &impl ConnectionTrait, url_id: Uuid) -> anyhow::Result<bool> {
+    let result = txn
+        .execute_raw(Statement::from_sql_and_values(
+            DbBackend::Postgres,
+            "UPDATE urls SET status = 'retired', worker_id = NULL, lease_until = NULL, updated_at = now() \
+             WHERE id = $1 AND status NOT IN ('processing', 'retired') \
+               AND NOT EXISTS (SELECT 1 FROM program_urls WHERE url_id = $1)",
+            [url_id.into()],
+        ))
+        .await
+        .context("元の URL を巡回から外せない")?;
+    Ok(result.rows_affected() > 0)
 }
