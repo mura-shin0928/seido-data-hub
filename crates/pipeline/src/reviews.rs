@@ -838,6 +838,20 @@ mod tests {
     #[test]
     fn load_dir_reads_repo_reviews() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/reviews");
-        assert_eq!(load_dir(&dir).unwrap().len(), 2);
+        let json_count = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .is_some_and(|ext| ext == "json")
+            })
+            .count();
+        let files = load_dir(&dir).unwrap();
+        // 判定のファイルは増えていくので、総数は決め打ちせず json の数と合わせる
+        assert_eq!(files.len(), json_count);
+        assert!(files.iter().any(|f| f.reviews.len() == 290));
+        assert!(files.iter().any(|f| f.reviews.iter().any(|r| r.host_move)));
     }
 }
