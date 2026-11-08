@@ -973,3 +973,19 @@ async fn retired_old_url_is_not_crawled() {
         .unwrap();
     assert!(candidates.iter().all(|c| c.url_id != old));
 }
+
+#[test]
+fn the_kita_library_review_file_parses() {
+    let file = parse(include_str!(
+        "../../../data/reviews/2026-11-kita-library.json"
+    ))
+    .unwrap();
+    assert_eq!(file.reviews.len(), 1);
+    let review = &file.reviews[0];
+    assert_eq!(review.verdict, Verdict::Hit);
+    assert!(review.host_move);
+    assert_eq!(
+        review.program_id.to_string(),
+        "80b693e7-42f4-439f-a6bc-c4c8dde26208"
+    );
+}
