@@ -46,7 +46,7 @@ async fn main_url_id(db: &DatabaseConnection, index: usize) -> Uuid {
     row.try_get_by_index(0).unwrap()
 }
 
-/// fixture の index 番目の行の主たる URL に、その状態の資源を結ぶ
+/// fixture の index 番目の行の主たる URL に、その状態の資源を加える
 /// （resources と url_resources に1行ずつ。同じ URL に2回呼べるよう、canonical_url は呼ぶたびに別の値にする）
 async fn main_resource(db: &DatabaseConnection, index: usize, state: &str) {
     let url_id = main_url_id(db, index).await;
@@ -318,4 +318,31 @@ async fn swap_main(db: &DatabaseConnection, index: usize, url_id: Uuid) {
     ))
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn no_main_urls_is_an_error() {
+    let Some((db, _guard)) = common::fresh_db().await else {
+        return;
+    };
+    // 制度が無いのに一覧ページの行だけがある（取り込みの失敗や接続先の取り違え）
+    let prepared = domain::urls::prepare(FUKUSHI).unwrap();
+    db.execute_raw(Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "insert into urls (raw_url, normalized_url, dedup_key, host_key, role, priority) \
+         values ($1, $2, $3, $4, 'index', 90)",
+        [
+            prepared.raw_url.into(),
+            prepared.normalized_url.into(),
+            prepared.dedup_key.into(),
+            prepared.host_key.into(),
+        ],
+    ))
+    .await
+    .unwrap();
+    assert!(register(&db).await.is_err());
+    assert_eq!(
+        index_rows(&db).await,
+        [(FUKUSHI.to_string(), 0, 90, "queued".to_string())]
+    );
 }

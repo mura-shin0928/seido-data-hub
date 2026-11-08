@@ -1,7 +1,7 @@
 //! 一覧ページの起点を登録する。
 //!
 //! 起点は、すべての制度の主たる URL（`program_urls.role = 'main'`）の親ディレクトリ。主たる URL の資源が
-//! 死んでいても、親ディレクトリは起点に入れる。`index.html` を足して試さず、深さも0のままにする
+//! 死んでいても、親ディレクトリは起点に入れる。主たる URL が1件も無いときは、何も書かずにエラーにする（取り込みの失敗や接続先の取り違えで、一覧ページを全部止めないため）。`index.html` を足して試さず、深さも0のままにする
 //! （測定: 960件を試して HTML が返ったのは53件。深さ1まで広げると +5 ポイントのために11ホストへ +550 件の要求）。
 
 use std::collections::BTreeMap;
@@ -47,6 +47,11 @@ pub async fn register(db: &DatabaseConnection) -> anyhow::Result<Counts> {
         .query_all_raw(Statement::from_string(DbBackend::Postgres, MAIN_URLS))
         .await
         .context("主たる URL を読めない")?;
+    if rows.is_empty() {
+        anyhow::bail!(
+            "主たる URL が1件も無いので、起点の登録も一覧ページの停止もしていない（DATABASE_URL と取り込みを確かめる）"
+        );
+    }
     // 親ディレクトリを読めない・登録できないものは起点にしない。表記違いは最初に見たものを残す
     let mut starts: BTreeMap<String, PreparedUrl> = BTreeMap::new();
     for row in rows {
