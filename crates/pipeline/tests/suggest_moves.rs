@@ -213,8 +213,19 @@ async fn other_host_pages_are_not_used() {
         "児童手当",
     )
     .await;
+    // 対照: 主たる URL と同じホストの生きた一覧ページのリンクだけが候補になる
+    let host = main_host(&db, "児童手当").await;
+    let page = format!("{host}/list/index.html");
+    let same = format!("{host}/list/jidoteate-new.html");
+    let resource = index_page(&db, &page, "queued", "active").await;
+    add_link(&db, resource, &same, "児童手当").await;
     let report = suggest(&db, &BTreeSet::new()).await.unwrap();
-    assert!(report.suggestions.is_empty());
+    assert_eq!(report.targets, 1);
+    assert_eq!(report.suggestions.len(), 1);
+    let candidates = &report.suggestions[0].candidates;
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].url, same);
+    assert_eq!(candidates[0].page, page);
 }
 
 #[tokio::test]
@@ -267,6 +278,17 @@ async fn unusable_hosts_are_listed() {
             "deleted",
         )
         .await;
+    }
+    // d: 5件とも一度も取っていない（資源が無い）。使えないとはみなさない
+    for i in 0..5 {
+        let url_id = common::register(&db, &format!("https://d.example.jp/d{i}/")).await;
+        db.execute_raw(Statement::from_sql_and_values(
+            db.get_database_backend(),
+            "update urls set role = 'index' where id = $1",
+            [url_id.into()],
+        ))
+        .await
+        .unwrap();
     }
     index_page(&db, "https://b.example.jp/gone/", "retired", "deleted").await;
     index_page(&db, "https://a.example.jp/gone/", "retired", "active").await;

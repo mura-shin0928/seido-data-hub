@@ -14,7 +14,8 @@ use sea_orm::{
 };
 use serde::Serialize;
 
-/// 起点がこの数以上あるのに生きた一覧ページが無いホストは、起点の規則が使えないとみなす
+/// 取った（いまの資源がある）起点がこの数以上あるのに生きた一覧ページが無いホストは、起点の規則が使えないとみなす。
+/// まだ取っていない起点は数えない（実行で飛ばしたホストや登録直後を、使えないと誤らないため）
 pub const UNUSABLE_MIN_STARTS: usize = 5;
 
 /// 1制度の候補
@@ -70,7 +71,7 @@ const HOST_LINKS: &str = "SELECT pl.url, pl.dedup_key, pl.text, r.canonical_url 
     FROM page_links pl JOIN resources r ON r.id = pl.resource_id \
     WHERE r.state = 'active' AND pl.host_key = $1";
 
-/// ホストごとの、取る対象の起点（`retired` 以外の `index`）の数と、そのうちいまの資源が active のものの数
+/// ホストごとの、取る対象の起点（`retired` 以外の `index`）のうち、いまの資源があるものの数と、そのうち active のものの数
 const COVERAGE: &str = "SELECT u.host_key, count(*) AS starts, \
     count(*) FILTER (WHERE r.state = 'active') AS live_pages \
     FROM urls u \
@@ -78,7 +79,7 @@ const COVERAGE: &str = "SELECT u.host_key, count(*) AS starts, \
         SELECT ur.resource_id FROM url_resources ur \
         WHERE ur.url_id = u.id ORDER BY ur.observed_at DESC LIMIT 1) current ON TRUE \
     LEFT JOIN resources r ON r.id = current.resource_id \
-    WHERE u.role = 'index' AND u.status <> 'retired' \
+    WHERE u.role = 'index' AND u.status <> 'retired' AND r.id IS NOT NULL \
     GROUP BY u.host_key ORDER BY u.host_key";
 
 struct Link {
