@@ -5,6 +5,7 @@ pub use super::content_versions::Entity as ContentVersions;
 pub use super::crawl_runs::Entity as CrawlRuns;
 pub use super::fetch_history::Entity as FetchHistory;
 pub use super::host_moves::Entity as HostMoves;
+pub use super::page_links::Entity as PageLinks;
 pub use super::program_urls::Entity as ProgramUrls;
 pub use super::programs::Entity as Programs;
 pub use super::resources::Entity as Resources;
