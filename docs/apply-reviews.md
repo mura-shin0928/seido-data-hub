@@ -21,6 +21,9 @@ GitHub Actions の `Apply reviews`（`.github/workflows/apply-reviews.yml`）を
 差し替えは制度ごとの処理で、資源の状態には触らない。元の URL を共有する制度があっても、判定した制度だけが変わる。
 1つの古いページに複数の制度が載り、移転先が制度ごとに分かれていることがあるため。
 
+`hit`・`index` の候補の URL が一覧ページ（`register-index` が `role = 'index'` で登録したディレクトリのトップなど）だったときは、
+反映と同じトランザクションでその行を制度の URL（`role = 'seed'`）にする。起点から外れて止めてあった（`retired`）なら、すぐ取るように戻す。
+
 `link-related` は死んだ制度の関連リンクを毎週作り直すが、`source = 'discovered'` の行は消さない。
 `import-registry` も、`source = 'discovered'` の `main` がある制度は作り直さない。
 

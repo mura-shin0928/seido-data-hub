@@ -31,13 +31,15 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - id: build
         run: cargo build --release -p pipeline
-      # 前回の巡回で主たる URL が死んだ制度に、関連 URL を結ぶ。続く巡回が生死を確かめる
+      # 前回の巡回で主たる URL が死んだ制度に、関連 URL を加える。続く巡回が生死を確かめる
       - id: link-related
         run: ./target/release/pipeline link-related
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      # 主たる URL の親ディレクトリを一覧ページの起点として登録する。起点から外れたものは巡回から外す
+      # 主たる URL の親ディレクトリを一覧ページの起点として登録する。起点から外れたものは巡回から外す。
+      # 関連 URL の登録が失敗しても流す（ビルドの失敗では流さない）
       - id: register-index
+        if: ${{ steps.build.conclusion == 'success' && !cancelled() }}
         run: ./target/release/pipeline register-index
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
