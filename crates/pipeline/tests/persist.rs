@@ -1013,3 +1013,68 @@ async fn links_written_when_resource_already_hashed_by_seed() {
         vec![(url("/a.html"), "A".to_string())]
     );
 }
+
+#[tokio::test]
+async fn seed_fetch_replaces_links_an_index_url_stored() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let current = Arc::new(std::sync::Mutex::new(links_html(&[("/a.html", "A")])));
+    let fetcher = {
+        let current = current.clone();
+        serve(move |path| match path {
+            "/alias.html" => redirect(301, "/list.html"),
+            _ => body_page(&current.lock().unwrap()),
+        })
+        .await
+    };
+    let seed = register(&db, &url("/list.html")).await;
+    set_role(&db, seed, "seed").await;
+    let index = register(&db, &url("/alias.html")).await;
+    set_role(&db, index, "index").await;
+
+    // index の URL で先に取り、行を入れる
+    let fetch = get(&fetcher, "/alias.html").await;
+    record_fetch(&db, start_run(&db).await, index, 0, &fetch).await;
+    assert_eq!(
+        stored_links(&db).await,
+        vec![(url("/a.html"), "A".to_string())]
+    );
+
+    // リンクが変わったページを seed の URL で取る: ハッシュが進むので、行も入れ替える（古いまま残さない）
+    *current.lock().unwrap() = links_html(&[("/b.html", "B")]);
+    let fetch = get(&fetcher, "/list.html").await;
+    let recorded = record_fetch(&db, start_run(&db).await, seed, 0, &fetch).await;
+    assert!(saved_links_replaced(recorded));
+    assert_eq!(all_resources(&db).await.len(), 1);
+    assert_eq!(
+        stored_links(&db).await,
+        vec![(url("/b.html"), "B".to_string())]
+    );
+
+    // 同じ内容をまた seed の URL で取っても、入れ替えない
+    let fetch = get(&fetcher, "/list.html").await;
+    let recorded = record_fetch(&db, start_run(&db).await, seed, 0, &fetch).await;
+    assert!(!saved_links_replaced(recorded));
+}
+
+#[tokio::test]
+async fn a_page_without_same_host_links_is_not_counted_every_time() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let html = links_html(&[("http://www.town.example.jp/c.html", "他のホスト")]);
+    let fetcher = serve(move |_| body_page(&html)).await;
+    let id = register(&db, &url("/list.html")).await;
+    set_role(&db, id, "index").await;
+
+    let fetch = get(&fetcher, "/list.html").await;
+    record_fetch(&db, start_run(&db).await, id, 0, &fetch).await;
+    assert!(stored_links(&db).await.is_empty());
+
+    // 2回目: ハッシュは同じで、行が無いままなので、入れ替えたと数えない
+    let fetch = get(&fetcher, "/list.html").await;
+    let recorded = record_fetch(&db, start_run(&db).await, id, 0, &fetch).await;
+    assert!(!saved_links_replaced(recorded));
+    assert!(stored_links(&db).await.is_empty());
+}

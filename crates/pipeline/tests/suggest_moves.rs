@@ -89,12 +89,12 @@ async fn main_resource(db: &DatabaseConnection, name: &str, state: &str) {
     resource_for(db, url_id, &canonical, state).await;
 }
 
-/// 一覧ページ（role = 'index'）の行を作り、その状態の資源を加える。資源の id を返す
+/// 一覧ページ（role = 'index'）の行を作り、その状態の資源を加える（取りに行った後の形）。資源の id を返す
 async fn index_page(db: &DatabaseConnection, url: &str, status: &str, state: &str) -> Uuid {
     let url_id = common::register(db, url).await;
     db.execute_raw(Statement::from_sql_and_values(
         db.get_database_backend(),
-        "update urls set role = 'index', status = $2 where id = $1",
+        "update urls set role = 'index', status = $2, last_crawled_at = now() where id = $1",
         [url_id.into(), status.into()],
     ))
     .await
@@ -199,6 +199,49 @@ async fn dead_index_pages_are_not_used() {
 }
 
 #[tokio::test]
+async fn links_of_parked_index_pages_are_not_used() {
+    let Some((db, _guard)) = common::fresh_db().await else {
+        return;
+    };
+    import_fixture(&db).await;
+    main_resource(&db, "児童手当", "deleted").await;
+    let host = main_host(&db, "児童手当").await;
+    // 資源は active でも、それに当たる一覧ページの URL が起点から外れている（retired）
+    let resource = index_page(&db, &format!("{host}/list/"), "retired", "active").await;
+    add_link(
+        &db,
+        resource,
+        &format!("{host}/list/jidoteate-new.html"),
+        "児童手当",
+    )
+    .await;
+    let report = suggest(&db, &BTreeSet::new()).await.unwrap();
+    assert_eq!(report.targets, 1);
+    assert!(report.suggestions.is_empty());
+}
+
+#[tokio::test]
+async fn links_of_an_index_url_that_moved_to_another_resource_are_not_used() {
+    let Some((db, _guard)) = common::fresh_db().await else {
+        return;
+    };
+    let (page, _, _) = dead_with_index(&db, "active").await;
+    // 同じ一覧ページの URL が、後でリンクの無い別の資源に着いた（いまの資源でなくなった資源のリンクは使わない）
+    let url_id: Uuid = one(
+        &db,
+        "select id from urls where normalized_url = $1",
+        vec![page.clone().into()],
+    )
+    .await;
+    db.execute_unprepared("update url_resources set observed_at = now() - interval '1 day'")
+        .await
+        .unwrap();
+    resource_for(&db, url_id, &format!("{page}?moved"), "active").await;
+    let report = suggest(&db, &BTreeSet::new()).await.unwrap();
+    assert!(report.suggestions.is_empty());
+}
+
+#[tokio::test]
 async fn other_host_pages_are_not_used() {
     let Some((db, _guard)) = common::fresh_db().await else {
         return;
@@ -253,7 +296,8 @@ async fn unusable_hosts_are_listed() {
     let Some((db, _guard)) = common::fresh_db().await else {
         return;
     };
-    // a: 5件すべて deleted（retired が1件あっても数えない）、b: 4件すべて deleted、c: 5件のうち1件が active
+    // a: 5件すべて deleted（retired が1件あっても数えない）、b: 4件すべて deleted、c: 5件のうち1件が active、
+    // e: 5件とも取りに行ったが資源が無い（403 だけを返すホスト）
     for i in 0..5 {
         index_page(
             &db,
@@ -279,26 +323,36 @@ async fn unusable_hosts_are_listed() {
         )
         .await;
     }
-    // d: 5件とも一度も取っていない（資源が無い）。使えないとはみなさない
-    for i in 0..5 {
-        let url_id = common::register(&db, &format!("https://d.example.jp/d{i}/")).await;
-        db.execute_raw(Statement::from_sql_and_values(
-            db.get_database_backend(),
-            "update urls set role = 'index' where id = $1",
-            [url_id.into()],
-        ))
-        .await
-        .unwrap();
+    // d: 5件とも一度も取りに行っていない（last_crawled_at が無い）。使えないとはみなさない
+    for (host, crawled) in [("d", false), ("e", true)] {
+        for i in 0..5 {
+            let url_id = common::register(&db, &format!("https://{host}.example.jp/d{i}/")).await;
+            db.execute_raw(Statement::from_sql_and_values(
+                db.get_database_backend(),
+                "update urls set role = 'index', \
+                 last_crawled_at = case when $2 then now() end where id = $1",
+                [url_id.into(), crawled.into()],
+            ))
+            .await
+            .unwrap();
+        }
     }
     index_page(&db, "https://b.example.jp/gone/", "retired", "deleted").await;
     index_page(&db, "https://a.example.jp/gone/", "retired", "active").await;
     let report = suggest(&db, &BTreeSet::new()).await.unwrap();
     assert_eq!(
         report.unusable_hosts,
-        [HostCoverage {
-            host_key: "https://a.example.jp".into(),
-            starts: 5,
-            live_pages: 0
-        }]
+        [
+            HostCoverage {
+                host_key: "https://a.example.jp".into(),
+                starts: 5,
+                live_pages: 0
+            },
+            HostCoverage {
+                host_key: "https://e.example.jp".into(),
+                starts: 5,
+                live_pages: 0
+            }
+        ]
     );
 }

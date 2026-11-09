@@ -13,6 +13,9 @@
 //! `register` がその移行を `host_moves` に承認として残し、`link` は承認があるときだけ、元の資源が無くても差し替える。
 //! 差し替えでどの制度からも使われなくなった元の URL は `retired` にして、巡回から外す。
 //!
+//! 候補の URL が一覧ページ（`role = 'index'`）として登録済みなら、反映と同じトランザクションで制度の URL（`seed`）にする。
+//! 一覧ページのままだと、起点から外れたときに `register-index` が止め、制度の URL が巡回されなくなるため。
+//!
 //! 1件ずつのトランザクションで書く。`dry_run` は同じ処理を流して最後に戻す（数える処理を別に持たない）。
 //! 判定の後に状況が変わった件（主たる URL が変わった・生き返った・候補が取れない）は反映せずに `Refusal` で返す。
 
@@ -456,6 +459,7 @@ async fn link_one(
         && candidate_url_id == Some(main_url_id)
         && main.try_get_by_index::<String>(2)? == "discovered"
     {
+        promote_index(txn, main_url_id).await?;
         return Ok(Linked::Already { retired: false });
     }
     if main.try_get_by_index::<String>(1)? != prepare(&review.dead_url)?.normalized_url {
@@ -492,6 +496,7 @@ async fn link_one(
         .await?
         .is_some();
     if review.verdict == Verdict::Index && exists {
+        promote_index(txn, candidate_url_id).await?;
         return Ok(Linked::Already { retired: false });
     }
     if !matches!(old.state.as_str(), "deleted" | "deletion_candidate") {
@@ -530,6 +535,7 @@ async fn link_one(
             if updated.rows_affected() == 0 {
                 bail!("主たる URL を差し替える直前に元の資源の状態が変わった");
             }
+            promote_index(txn, candidate_url_id).await?;
             Ok(Linked::Replaced { retired: false })
         }
         Verdict::Index => {
@@ -553,6 +559,7 @@ async fn link_one(
             .exec_without_returning(txn)
             .await
             .context("program_urls を書けない")?;
+            promote_index(txn, candidate_url_id).await?;
             Ok(Linked::Related)
         }
         Verdict::None => unreachable!("none は candidate_of で除いている"),
@@ -605,6 +612,7 @@ async fn link_host_move(
             Some(id) => retire_if_unused(txn, id).await?,
             None => false,
         };
+        promote_index(txn, main.id).await?;
         return Ok(Linked::Already { retired });
     }
     if main.normalized_url != dead.normalized_url {
@@ -669,7 +677,26 @@ async fn link_host_move(
         bail!("主たる URL を差し替える直前に元の資源の状態が変わった");
     }
     let retired = retire_if_unused(txn, main.id).await?;
+    promote_index(txn, candidate_url_id).await?;
     Ok(Linked::Replaced { retired })
+}
+
+/// 一覧ページ（`role = 'index'`）として登録済みの URL を、制度の URL（`seed`）にする。他の role の行は触らない。
+/// 起点から外れて止めてあった（`retired`）ものは、すぐ取るように戻す。
+/// もう一度流したときも呼び、この扱いより前に反映した行も直す
+async fn promote_index(txn: &impl ConnectionTrait, url_id: Uuid) -> anyhow::Result<()> {
+    txn.execute_raw(Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        "UPDATE urls SET role = 'seed', \
+             status = CASE WHEN status = 'retired' THEN 'queued' ELSE status END, \
+             next_crawl_at = CASE WHEN status = 'retired' THEN now() ELSE next_crawl_at END, \
+             updated_at = now() \
+         WHERE id = $1 AND role = 'index'",
+        [url_id.into()],
+    ))
+    .await
+    .context("一覧ページの URL を制度の URL にできない")?;
+    Ok(())
 }
 
 /// どの制度にも使われていない URL を巡回から外す（`retired`）。外したら true。

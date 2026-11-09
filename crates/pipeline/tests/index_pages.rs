@@ -260,6 +260,56 @@ async fn dropped_starts_are_parked_and_restored() {
 }
 
 #[tokio::test]
+async fn index_rows_used_by_programs_are_not_parked() {
+    let Some((db, _guard)) = common::fresh_db().await else {
+        return;
+    };
+    import_fixture(&db).await;
+    register(&db).await.unwrap();
+    // 児童手当の一覧ページを、出生届の関連 URL にする（人の判定で制度の URL になった一覧ページ）
+    db.execute_raw(Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "insert into program_urls (program_id, url_id, role, rank, source) \
+         select p.id, u.id, 'related', 1, 'discovered' from programs p, urls u \
+         where p.psid = $1 and u.normalized_url = $2",
+        [psid_of(1).into(), JIDOTEATE.into()],
+    ))
+    .await
+    .unwrap();
+    // 児童手当の主たる URL を別のディレクトリにし、その一覧ページを起点から外す
+    let other = domain::urls::prepare("https://www.city.example.jp/other/page.html").unwrap();
+    let row = db
+        .query_one_raw(Statement::from_sql_and_values(
+            db.get_database_backend(),
+            "insert into urls (raw_url, normalized_url, dedup_key, host_key) \
+             values ($1, $2, $3, $4) returning id",
+            [
+                other.raw_url.into(),
+                other.normalized_url.into(),
+                other.dedup_key.into(),
+                other.host_key.into(),
+            ],
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    swap_main(&db, 0, row.try_get_by_index(0).unwrap()).await;
+
+    let counts = register(&db).await.unwrap();
+    assert_eq!(counts.parked, 0);
+    assert_eq!(
+        count(
+            &db,
+            &format!(
+                "select count(*) from urls where normalized_url = '{JIDOTEATE}' and status = 'queued'"
+            )
+        )
+        .await,
+        1
+    );
+}
+
+#[tokio::test]
 async fn seed_rows_are_never_parked() {
     let Some((db, _guard)) = common::fresh_db().await else {
         return;

@@ -1,7 +1,8 @@
 //! 主たる URL が死んだ制度の移転先の候補を、一覧ページのリンクから作る。
 //!
 //! DB の `page_links`（生きた一覧ページから取ったリンクの URL・リンク文字列）を、制度名に近い順に並べるだけで、
-//! DB には何も書かない。人が確かめ済みの（制度・`dedup_key`）の組は、リポジトリの判定のファイル
+//! DB には何も書かない。使うのは、いまも起点である一覧ページ（`retired` 以外の `index` の URL）のいまの資源のリンクに限る。
+//! 人が確かめ済みの（制度・`dedup_key`）の組は、リポジトリの判定のファイル
 //! （`data/reviews/*.json`）から渡され、候補から外す。結果は `--out` の JSON（成果物）と実行サマリーに出す。
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,8 +15,9 @@ use sea_orm::{
 };
 use serde::Serialize;
 
-/// 取った（いまの資源がある）起点がこの数以上あるのに生きた一覧ページが無いホストは、起点の規則が使えないとみなす。
-/// まだ取っていない起点は数えない（実行で飛ばしたホストや登録直後を、使えないと誤らないため）
+/// 一度でも取りに行った（`last_crawled_at` がある）起点がこの数以上あるのに生きた一覧ページが無いホストは、
+/// 起点の規則が使えないとみなす。403 だけを返すホストは資源ができないので、資源の有無では数えない。
+/// まだ取りに行っていない起点は数えない（実行で飛ばしたホストや登録直後を、使えないと誤らないため）
 pub const UNUSABLE_MIN_STARTS: usize = 5;
 
 /// 1制度の候補
@@ -31,7 +33,7 @@ pub struct Suggestion {
     pub more: usize,
 }
 
-/// ホストごとの一覧ページの起点と、そのうち生きているものの数
+/// ホストごとの、一度でも取りに行った一覧ページの起点と、そのうち生きているものの数
 #[derive(Debug, PartialEq, Eq, Serialize)]
 pub struct HostCoverage {
     pub host_key: String,
@@ -66,12 +68,21 @@ const TARGETS: &str = "SELECT p.id, p.area_code, p.canonical_name, p.short_name,
 const PROGRAM_KEYS: &str = "SELECT pu.program_id, u.dedup_key FROM program_urls pu \
     JOIN urls u ON u.id = pu.url_id WHERE pu.program_id = ANY($1)";
 
-/// そのホストの、生きた一覧ページから取ったリンク
+/// そのホストの、生きた一覧ページから取ったリンク。資源が、いまも起点である一覧ページ（`retired` 以外の `index`）の
+/// いまの資源（`observed_at` が最新）であるものに限る（起点から外れた一覧ページの古いリンクを使わないため）
 const HOST_LINKS: &str = "SELECT pl.url, pl.dedup_key, pl.text, r.canonical_url AS page \
     FROM page_links pl JOIN resources r ON r.id = pl.resource_id \
-    WHERE r.state = 'active' AND pl.host_key = $1";
+    WHERE r.state = 'active' AND pl.host_key = $1 \
+    AND EXISTS (\
+        SELECT 1 FROM url_resources ur \
+        JOIN urls u ON u.id = ur.url_id AND u.role = 'index' AND u.status <> 'retired' \
+        JOIN LATERAL (\
+            SELECT latest.resource_id FROM url_resources latest \
+            WHERE latest.url_id = u.id ORDER BY latest.observed_at DESC LIMIT 1) current ON TRUE \
+        WHERE ur.resource_id = r.id AND current.resource_id = r.id)";
 
-/// ホストごとの、取る対象の起点（`retired` 以外の `index`）のうち、いまの資源があるものの数と、そのうち active のものの数
+/// ホストごとの、取る対象の起点（`retired` 以外の `index`）のうち一度でも取りに行ったものの数と、
+/// そのうちいまの資源が active のものの数
 const COVERAGE: &str = "SELECT u.host_key, count(*) AS starts, \
     count(*) FILTER (WHERE r.state = 'active') AS live_pages \
     FROM urls u \
@@ -79,7 +90,7 @@ const COVERAGE: &str = "SELECT u.host_key, count(*) AS starts, \
         SELECT ur.resource_id FROM url_resources ur \
         WHERE ur.url_id = u.id ORDER BY ur.observed_at DESC LIMIT 1) current ON TRUE \
     LEFT JOIN resources r ON r.id = current.resource_id \
-    WHERE u.role = 'index' AND u.status <> 'retired' AND r.id IS NOT NULL \
+    WHERE u.role = 'index' AND u.status <> 'retired' AND u.last_crawled_at IS NOT NULL \
     GROUP BY u.host_key ORDER BY u.host_key";
 
 struct Link {

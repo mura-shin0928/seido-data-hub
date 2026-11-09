@@ -7,6 +7,7 @@
 //! 比べた結果は呼び出し側へ返す。
 //!
 //! 一覧ページ（`role = 'index'`）の内容を書くときは、リンクが変わったときだけ、同じホストのリンクを `page_links` に入れ替える。
+//! 一覧ページと制度の URL が同じ資源に当たるときは、制度の URL で取ったときも、既にある行を入れ替える（古いまま残さない）。
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -242,9 +243,12 @@ fn describe(outcome: &Outcome) -> (&'static str, Option<String>) {
 /// 内容を書かない分岐の結果は、304 と生きていない観測は `Unchanged`、本文を読まなかった 200 は `Unknown`。
 /// `next_crawl_at` は動かさない。
 ///
-/// `index`（一覧ページ）で内容を書くときは、上書き前の `links_hash` が今回と違うか、その資源の `page_links` が1行も無ければ、
-/// リンクを入れ替える（`seed` の URL が先に同じ資源のハッシュだけ書いたときも、行を入れ損ねない）。
-/// 戻り値の2つ目は、入れ替えたか。
+/// 内容を書くときは、`index`（一覧ページ）で取ったか、その資源に `page_links` の行が既にあれば、
+/// 上書き前の `links_hash` が今回と違うか行が1行も無いときにリンクを入れ替える。
+/// `seed` の URL が先に同じ資源のハッシュだけ書いたときも行を入れ損ねず、`seed` の URL で取ってハッシュが進んだときも
+/// 行を古いまま残さない。`seed` だけが当たる資源（行が無い）には何も書かない。
+/// 戻り値の2つ目は、リンクが変わったか（ハッシュが違った、または行が無かったところに入った）。
+/// 同じホストのリンクが無いページを取り直すたびに、入れ替えたと数えないため。
 async fn save_resource(
     txn: &impl ConnectionTrait,
     resource_id: Uuid,
@@ -383,34 +387,41 @@ async fn save_resource(
     }
 
     let links_replaced = match extracted {
-        Some(extracted) if index => {
-            let stale = before.links_hash.as_deref() != Some(extracted.hashes.links.as_str())
-                || page_links::Entity::find()
-                    .filter(page_links::Column::ResourceId.eq(resource_id))
-                    .count(txn)
-                    .await
-                    .context("page_links を数えられない")?
-                    == 0;
-            if stale {
-                replace_links(txn, &before, extracted).await?;
+        Some(extracted) => {
+            let existing = page_links::Entity::find()
+                .filter(page_links::Column::ResourceId.eq(resource_id))
+                .count(txn)
+                .await
+                .context("page_links を数えられない")?;
+            let hash_changed =
+                before.links_hash.as_deref() != Some(extracted.hashes.links.as_str());
+            if (index || existing > 0) && (hash_changed || existing == 0) {
+                match replace_links(txn, &before, extracted).await? {
+                    Some(written) => hash_changed || (existing == 0 && written > 0),
+                    None => false,
+                }
+            } else {
+                false
             }
-            stale
         }
-        _ => false,
+        None => false,
     };
     Ok((change, links_replaced))
 }
 
 /// 資源の `page_links` を、ページのリンクのうち資源と同じホストのものに入れ替える（残らなければ消すだけ）。
-/// 同じホストかは `host_key` で見る。`url`・`dedup_key`・`host_key` は `prepare` の値
+/// 同じホストかは `host_key` で見る。`url`・`dedup_key`・`host_key` は `prepare` の値。
+/// 書いた行の数を返す。資源の `canonical_url` を正規化できなければ何も書かずに `None`
 async fn replace_links(
     txn: &impl ConnectionTrait,
     resource: &resources::Model,
     extracted: &Extracted,
-) -> anyhow::Result<()> {
-    let page_host = domain::urls::prepare(&resource.canonical_url)
-        .context("資源の canonical_url を正規化できない")?
-        .host_key;
+) -> anyhow::Result<Option<usize>> {
+    // エラーにすると巡回全体が止まり、同じ行を毎週 claim しては失敗するので、リンクだけ諦める
+    let Ok(page) = domain::urls::prepare(&resource.canonical_url) else {
+        return Ok(None);
+    };
+    let page_host = page.host_key;
     let mut rows = BTreeMap::new();
     for anchor in &extracted.anchors {
         let Ok(prepared) = domain::urls::prepare(&anchor.url) else {
@@ -434,13 +445,14 @@ async fn replace_links(
         .exec(txn)
         .await
         .context("page_links を消せない")?;
-    if !rows.is_empty() {
+    let written = rows.len();
+    if written > 0 {
         page_links::Entity::insert_many(rows.into_values())
             .exec_without_returning(txn)
             .await
             .context("page_links を書けない")?;
     }
-    Ok(())
+    Ok(Some(written))
 }
 
 /// ジョブを完了にし、次の状態と次に取る時刻を書く。回数と時刻は取得の記録と同じトランザクションで動かす。
