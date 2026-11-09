@@ -812,7 +812,8 @@ async fn a_retry_and_a_reclaimed_lease_are_counted_by_the_loop() {
         report.stats.counters,
         Some(Counters {
             retries: 1,
-            lease_expired: 1
+            lease_expired: 1,
+            links_replaced: 0
         })
     );
     // 再試行の 503 は 200 に置き換わって残らない

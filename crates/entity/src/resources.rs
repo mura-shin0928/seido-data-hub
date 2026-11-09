@@ -57,8 +57,16 @@ pub enum Relation {
         on_delete = "NoAction"
     )]
     SelfRef,
+    #[sea_orm(has_many = "super::page_links::Entity")]
+    PageLinks,
     #[sea_orm(has_many = "super::url_resources::Entity")]
     UrlResources,
+}
+
+impl Related<super::page_links::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::PageLinks.def()
+    }
 }
 
 impl Related<super::url_resources::Entity> for Entity {

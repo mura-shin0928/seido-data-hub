@@ -265,6 +265,7 @@ async fn closing_a_run_keeps_its_stats_and_alerts_and_load_reads_them_back() {
     let counters = Counters {
         retries: 1,
         lease_expired: 0,
+        links_replaced: 0,
     };
     let stats = run_report::collect(&db, run_id, Some(counters))
         .await
@@ -401,4 +402,39 @@ async fn without_a_previous_run_the_comparison_with_it_is_dropped() {
             previous_rate: None,
         }]
     );
+}
+
+#[tokio::test]
+async fn collect_splits_index_pages() {
+    let Some((db, _guard)) = fresh_db().await else {
+        return;
+    };
+    let fetcher = Arc::new(serve(|_| page(None)).await);
+    register(&db, &url("/a.html")).await;
+    let index = register(&db, &url("/list/")).await;
+    exec(
+        &db,
+        "update urls set role = 'index', depth = 0 where id = $1",
+        vec![index.into()],
+    )
+    .await;
+
+    run_once(&db, &fetcher).await;
+    // 2回目は1回目の取得と比べられるので、一覧ページが compared に入らないことを見られる
+    exec(
+        &db,
+        "update urls set status = 'queued', next_crawl_at = now() - interval '1 second'",
+        vec![],
+    )
+    .await;
+    let run_id = run_once(&db, &fetcher).await;
+    let stats = run_report::collect(&db, run_id, None).await.unwrap();
+
+    let key = CITY_KEY.to_string();
+    assert_eq!(stats.hosts[&key].fetched(), 1);
+    assert_eq!(stats.index_hosts[&key].fetched(), 1);
+    assert_eq!(stats.hosts[&key].compared, 1);
+    assert_eq!(stats.index_hosts[&key].compared, 0);
+    assert_eq!(stats.index_hosts[&key].changed, 0);
+    assert_eq!(stats.all_hosts()[&key].fetched(), 2);
 }

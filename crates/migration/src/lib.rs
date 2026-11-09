@@ -10,6 +10,7 @@ mod m20261003_000002_add_run_report;
 mod m20261003_000003_add_recrawl_interval;
 mod m20261018_000001_drop_program_status;
 mod m20261108_000001_add_retired_url_status;
+mod m20261109_000001_create_page_links;
 
 pub struct Migrator;
 
@@ -27,6 +28,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261003_000003_add_recrawl_interval::Migration),
             Box::new(m20261018_000001_drop_program_status::Migration),
             Box::new(m20261108_000001_add_retired_url_status::Migration),
+            Box::new(m20261109_000001_create_page_links::Migration),
         ]
     }
 }

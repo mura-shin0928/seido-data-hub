@@ -5,7 +5,11 @@
 //!
 //! 内容を書くときは前回の内容と比べ（`domain::change`）、変わったときだけ資源の `last_changed_at` と `change_count` を進める。
 //! 比べた結果は呼び出し側へ返す。
+//!
+//! 一覧ページ（`role = 'index'`）の内容を書くときは、リンクが変わったときだけ、同じホストのリンクを `page_links` に入れ替える。
+//! 一覧ページと制度の URL が同じ資源に当たるときは、制度の URL で取ったときも、既にある行を入れ替える（古いまま残さない）。
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -13,11 +17,11 @@ use domain::change::{self, Change};
 use domain::extract::{self, Extracted};
 use domain::liveness::Observation;
 use domain::schedule::{self, Policy, Visit};
-use entity::{content_versions, fetch_history, resources, urls};
+use entity::{content_versions, fetch_history, page_links, resources, urls};
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{
     ActiveValue::Set,
-    ColumnTrait, ConnectionTrait, EntityTrait, ExprTrait, QueryFilter, QuerySelect,
+    ColumnTrait, ConnectionTrait, EntityTrait, ExprTrait, PaginatorTrait, QueryFilter, QuerySelect,
     TransactionSession, TransactionTrait,
     prelude::{DateTimeWithTimeZone, Uuid},
 };
@@ -44,6 +48,8 @@ pub enum Recorded {
         processed: Box<Processed>,
         /// 前回の内容と比べた結果。次に取るまでの間隔の調整に使う
         change: Change,
+        /// 一覧ページのリンク（`page_links`）を入れ替えたか
+        links_replaced: bool,
     },
     /// この実行でこの URL は記録済み。何も書いていない（同じ実行の流し直し）
     AlreadyRecorded,
@@ -82,15 +88,17 @@ pub async fn record<C: ConnectionTrait + TransactionTrait>(
         attempt.ctx,
     )
     .await?;
-    let change = match (processed.resource_id, processed.verdict.observation) {
+    let (change, links_replaced) = match (processed.resource_id, processed.verdict.observation) {
         (Some(resource_id), Some(observation)) => {
-            save_resource(&txn, resource_id, observation, attempt).await?
+            let index = url.role == "index";
+            save_resource(&txn, resource_id, observation, attempt, index).await?
         }
-        _ => Change::Unknown,
+        _ => (Change::Unknown, false),
     };
     let pdf = is_pdf(&txn, attempt.fetch, processed.resource_id).await?;
     let job = processed.verdict.job;
-    let kind = schedule::kind(job, processed.transition.as_ref().map(|t| t.state), pdf);
+    let state = processed.transition.as_ref().map(|t| t.state);
+    let kind = schedule::kind(job, state, pdf, url.role == "index");
     complete_job(
         &txn,
         &url,
@@ -104,6 +112,7 @@ pub async fn record<C: ConnectionTrait + TransactionTrait>(
     Ok(Recorded::Saved {
         processed: Box::new(processed),
         change,
+        links_replaced,
     })
 }
 
@@ -233,12 +242,20 @@ fn describe(outcome: &Outcome) -> (&'static str, Option<String>) {
 /// 応答に無い値は NULL で上書きする（消えた validator を送り続けない）。
 /// 内容を書かない分岐の結果は、304 と生きていない観測は `Unchanged`、本文を読まなかった 200 は `Unknown`。
 /// `next_crawl_at` は動かさない。
+///
+/// 内容を書くときは、`index`（一覧ページ）で取ったか、その資源に `page_links` の行が既にあれば、
+/// 上書き前の `links_hash` が今回と違うか行が1行も無いときにリンクを入れ替える。
+/// `seed` の URL が先に同じ資源のハッシュだけ書いたときも行を入れ損ねず、`seed` の URL で取ってハッシュが進んだときも
+/// 行を古いまま残さない。`seed` だけが当たる資源（行が無い）には何も書かない。
+/// 戻り値の2つ目は、リンクが変わったか（ハッシュが違った、または行が無かったところに入った）。
+/// 同じホストのリンクが無いページを取り直すたびに、入れ替えたと数えないため。
 async fn save_resource(
     txn: &impl ConnectionTrait,
     resource_id: Uuid,
     observation: Observation,
     attempt: &Attempt<'_>,
-) -> anyhow::Result<Change> {
+    index: bool,
+) -> anyhow::Result<(Change, bool)> {
     let readable = match &attempt.fetch.outcome {
         Outcome::Response(response) if observation == Observation::Alive => response
             .raw_hash
@@ -258,11 +275,12 @@ async fn save_resource(
             &attempt.fetch.outcome,
             Outcome::Response(response) if response.status == 304
         );
-        return Ok(if not_modified || observation != Observation::Alive {
+        let change = if not_modified || observation != Observation::Alive {
             Change::Unchanged
         } else {
             Change::Unknown
-        });
+        };
+        return Ok((change, false));
     };
 
     let before = resources::Entity::find_by_id(resource_id)
@@ -367,7 +385,74 @@ async fn save_resource(
         .await
         .context("content_versions を書けない")?;
     }
-    Ok(change)
+
+    let links_replaced = match extracted {
+        Some(extracted) => {
+            let existing = page_links::Entity::find()
+                .filter(page_links::Column::ResourceId.eq(resource_id))
+                .count(txn)
+                .await
+                .context("page_links を数えられない")?;
+            let hash_changed =
+                before.links_hash.as_deref() != Some(extracted.hashes.links.as_str());
+            if (index || existing > 0) && (hash_changed || existing == 0) {
+                match replace_links(txn, &before, extracted).await? {
+                    Some(written) => hash_changed || (existing == 0 && written > 0),
+                    None => false,
+                }
+            } else {
+                false
+            }
+        }
+        None => false,
+    };
+    Ok((change, links_replaced))
+}
+
+/// 資源の `page_links` を、ページのリンクのうち資源と同じホストのものに入れ替える（残らなければ消すだけ）。
+/// 同じホストかは `host_key` で見る。`url`・`dedup_key`・`host_key` は `prepare` の値。
+/// 書いた行の数を返す。資源の `canonical_url` を正規化できなければ何も書かずに `None`
+async fn replace_links(
+    txn: &impl ConnectionTrait,
+    resource: &resources::Model,
+    extracted: &Extracted,
+) -> anyhow::Result<Option<usize>> {
+    // エラーにすると巡回全体が止まり、同じ行を毎週 claim しては失敗するので、リンクだけ諦める
+    let Ok(page) = domain::urls::prepare(&resource.canonical_url) else {
+        return Ok(None);
+    };
+    let page_host = page.host_key;
+    let mut rows = BTreeMap::new();
+    for anchor in &extracted.anchors {
+        let Ok(prepared) = domain::urls::prepare(&anchor.url) else {
+            continue;
+        };
+        if prepared.host_key != page_host {
+            continue;
+        }
+        rows.entry((prepared.normalized_url.clone(), anchor.text.clone()))
+            .or_insert_with(|| page_links::ActiveModel {
+                resource_id: Set(resource.id),
+                url: Set(prepared.normalized_url),
+                dedup_key: Set(prepared.dedup_key),
+                host_key: Set(prepared.host_key),
+                text: Set(anchor.text.clone()),
+            });
+    }
+
+    page_links::Entity::delete_many()
+        .filter(page_links::Column::ResourceId.eq(resource.id))
+        .exec(txn)
+        .await
+        .context("page_links を消せない")?;
+    let written = rows.len();
+    if written > 0 {
+        page_links::Entity::insert_many(rows.into_values())
+            .exec_without_returning(txn)
+            .await
+            .context("page_links を書けない")?;
+    }
+    Ok(Some(written))
 }
 
 /// ジョブを完了にし、次の状態と次に取る時刻を書く。回数と時刻は取得の記録と同じトランザクションで動かす。

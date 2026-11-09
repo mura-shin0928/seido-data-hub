@@ -7,6 +7,7 @@ mod common;
 
 use pipeline::claim::{self, Exclude};
 use pipeline::import_registry::import;
+use pipeline::index_pages;
 use pipeline::reviews::{
     LinkReport, RefuseReason, RegisterCounts, ReviewFile, Verdict, link, parse, register,
 };
@@ -517,6 +518,146 @@ async fn index_adds_discovered_related() {
         .await,
         1
     );
+}
+
+/// URL の（role, status, next_crawl_at が過ぎているか）
+async fn role_of(db: &DatabaseConnection, raw: &str) -> (String, String, bool) {
+    let row = db
+        .query_one_raw(Statement::from_sql_and_values(
+            db.get_database_backend(),
+            "select role, status, next_crawl_at <= now() from urls where normalized_url = $1",
+            [domain::urls::prepare(raw).unwrap().normalized_url.into()],
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    (
+        row.try_get_by_index(0).unwrap(),
+        row.try_get_by_index(1).unwrap(),
+        row.try_get_by_index(2).unwrap(),
+    )
+}
+
+/// URL の role と status を書き換え、次に取る時刻を先にする（一覧ページとして登録され、巡回が進んだ後の形）
+async fn set_role(db: &DatabaseConnection, raw: &str, role: &str, status: &str) {
+    db.execute_raw(Statement::from_sql_and_values(
+        db.get_database_backend(),
+        "update urls set role = $2, status = $3, next_crawl_at = now() + interval '7 days' \
+         where normalized_url = $1",
+        [
+            domain::urls::prepare(raw).unwrap().normalized_url.into(),
+            role.into(),
+            status.into(),
+        ],
+    ))
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn hit_on_an_index_row_makes_it_a_program_url() {
+    let Some((db, _guard)) = common::fresh_db().await else {
+        return;
+    };
+    let programs = setup(&db).await;
+    dead_main(&db, &programs[0], "deleted").await;
+    candidate(&db, LIST, "active").await;
+    set_role(&db, LIST, "index", "queued").await;
+    let report = link(
+        &db,
+        &file(vec![review(&programs[0], "hit", Some(LIST))]),
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.replaced, 1, "{report:?}");
+    // 状態と次に取る時刻はそのまま
+    assert_eq!(
+        role_of(&db, LIST).await,
+        ("seed".to_string(), "queued".to_string(), false)
+    );
+}
+
+#[tokio::test]
+async fn index_on_a_parked_index_row_makes_it_a_program_url_again_crawled() {
+    let Some((db, _guard)) = common::fresh_db().await else {
+        return;
+    };
+    let programs = setup(&db).await;
+    dead_main(&db, &programs[0], "deleted").await;
+    candidate(&db, LIST, "active").await;
+    set_role(&db, LIST, "index", "retired").await;
+    let report = link(
+        &db,
+        &file(vec![review(&programs[0], "index", Some(LIST))]),
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.related, 1, "{report:?}");
+    // 起点から外れて止めてあったので、すぐ取るように戻す
+    assert_eq!(
+        role_of(&db, LIST).await,
+        ("seed".to_string(), "queued".to_string(), true)
+    );
+}
+
+#[tokio::test]
+async fn link_does_not_change_other_roles() {
+    let Some((db, _guard)) = common::fresh_db().await else {
+        return;
+    };
+    let programs = setup(&db).await;
+    dead_main(&db, &programs[0], "deleted").await;
+    candidate(&db, LIST, "active").await;
+    set_role(&db, LIST, "discovered", "retired").await;
+    link(
+        &db,
+        &file(vec![review(&programs[0], "index", Some(LIST))]),
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        role_of(&db, LIST).await,
+        ("discovered".to_string(), "retired".to_string(), false)
+    );
+}
+
+#[tokio::test]
+async fn a_hit_on_a_registered_index_page_stays_crawled_after_register_index() {
+    let Some((db, _guard)) = common::fresh_db().await else {
+        return;
+    };
+    let programs = setup(&db).await;
+    index_pages::register(&db).await.unwrap();
+    // 死んだページが、一覧ページとして登録済みのディレクトリのトップへ移った
+    let dir = domain::moves::parent_dir(&programs[0].main_url).unwrap();
+    assert_eq!(role_of(&db, &dir).await.0, "index");
+    let dir_id = query_uuid(
+        &db,
+        "select id from urls where normalized_url = $1",
+        vec![dir.clone().into()],
+    )
+    .await;
+    let resource_id = resource(&db, "active").await;
+    attach(&db, dir_id, resource_id).await;
+    dead_main(&db, &programs[0], "deleted").await;
+    let report = link(
+        &db,
+        &file(vec![review(&programs[0], "hit", Some(&dir))]),
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.replaced, 1, "{report:?}");
+    assert_eq!(main_of(&db, programs[0].id).await.0, dir);
+
+    // 主たる URL がディレクトリそのものになったので、そこはもう起点ではない。それでも止めない
+    let counts = index_pages::register(&db).await.unwrap();
+    assert_eq!(counts.parked, 0, "{counts:?}");
+    let (role, status, _) = role_of(&db, &dir).await;
+    assert_eq!((role.as_str(), status.as_str()), ("seed", "queued"));
 }
 
 #[tokio::test]

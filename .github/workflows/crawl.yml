@@ -1,7 +1,9 @@
 name: Crawl
 
-# 本番（Supabase）への週1の巡回。先に、主たる URL が死んだ制度へ関連 URL を結び、そのあと時刻の来た URL を取る。手でも流せる。
-# 警告（429・5xx の急増、全件失敗、変更率50%超、lease 切れの多発、応答が無い）に当たるとジョブが失敗する
+# 本番（Supabase）への週1の巡回。段は、関連 URL の登録（link-related）→ 一覧ページの起点の登録（register-index）→ 巡回（crawl）→
+# 移転先の候補づくり（suggest-moves。成果物 move-candidates）。手でも流せる。
+# 警告（429・5xx の急増、全件失敗、変更率50%超（一覧ページを数えない）、lease 切れの多発、応答が無い、ホストごと見送り）に当たると、ジョブが失敗する。
+# 移転先の候補が出ても警告ではない（失敗にしない）
 on:
   schedule:
     # 毎週月曜 03:17 JST。毎時0分は起動が遅れやすいので分をずらす
@@ -27,16 +29,36 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: cargo build --release -p pipeline
-      # 前回の巡回で主たる URL が死んだ制度に、関連 URL を結ぶ。続く巡回が生死を確かめる
+      - id: build
+        run: cargo build --release -p pipeline
+      # 前回の巡回で主たる URL が死んだ制度に、関連 URL を加える。続く巡回が生死を確かめる
       - id: link-related
         run: ./target/release/pipeline link-related
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      # 関連 URL の登録が失敗しても巡回は流す（ジョブは失敗のまま残る）。ビルドの失敗では流さない
+      # 主たる URL の親ディレクトリを一覧ページの起点として登録する。起点から外れたものは巡回から外す。
+      # 関連 URL の登録が失敗しても流す（ビルドの失敗では流さない）
+      - id: register-index
+        if: ${{ steps.build.conclusion == 'success' && !cancelled() }}
+        run: ./target/release/pipeline register-index
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      # 関連 URL・起点の登録が失敗しても巡回は流す（ジョブは失敗のまま残る）。ビルドの失敗では流さない
       # 起動は毎回ずれるので、48時間以内に時刻の来る URL も取る（7日間隔の URL が1週飛ばないように）
-      - if: ${{ success() || steps.link-related.conclusion == 'failure' }}
+      - if: ${{ steps.build.conclusion == 'success' && !cancelled() }}
         run: ./target/release/pipeline crawl --kind "$KIND" --due-within-hours 48 --min-responses 1
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           KIND: ${{ github.event_name == 'schedule' && 'scheduled' || 'manual' }}
+      # 巡回が警告で失敗しても候補は作る（DB を読むだけ）。月に1回、人が成果物を取って確かめる（docs/apply-reviews.md）
+      - if: ${{ steps.build.conclusion == 'success' && !cancelled() }}
+        run: ./target/release/pipeline suggest-moves --out move-candidates.json
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      - if: ${{ steps.build.conclusion == 'success' && !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: move-candidates
+          path: move-candidates.json
+          retention-days: 90
+          if-no-files-found: ignore

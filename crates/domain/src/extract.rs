@@ -154,7 +154,17 @@ pub struct Extracted {
     pub robots_meta: Option<String>,
     /// 本文コンテナの中のリンク（正規化済み・重複なし・並べ替え済み）。scope では絞っていない
     pub links: Vec<String>,
+    /// `links` の元になったリンクごとの文字（`(url, text)` で並べ替え済み・重複なし）。
+    /// 画像だけのリンクの文字は空
+    pub anchors: Vec<Anchor>,
     pub hashes: Hashes,
+}
+
+/// 本文コンテナの中のリンク1つ。`text` は正規化して1行にしたもの
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Anchor {
+    pub url: String,
+    pub text: String,
 }
 
 /// 5種のうち、HTML から作る4種。`raw_hash` は受信したバイト列から取得の側で作る
@@ -185,11 +195,17 @@ pub fn extract(html: &str, url: &str) -> Extracted {
 
     let (rule, container) = container(body);
     let mut links = BTreeSet::new();
+    let mut anchors = BTreeSet::new();
     let body_text = normalize(&text(
         container,
         &|e| is(e, &HIDDEN) || is_chrome(e),
         &mut |a| {
-            if let Some(link) = resolve_link(a, base.as_ref()) {
+            if let Some(link) = resolve_link(a.value(), base.as_ref()) {
+                let text = one_line(&normalize(&a.text().collect::<String>()));
+                anchors.insert(Anchor {
+                    url: link.clone(),
+                    text,
+                });
                 links.insert(link);
             }
         },
@@ -214,6 +230,7 @@ pub fn extract(html: &str, url: &str) -> Extracted {
         declared_canonical_url: canonical(root, base.as_ref()),
         robots_meta: robots_meta(root),
         links,
+        anchors: anchors.into_iter().collect(),
         body_text,
     }
 }
@@ -286,12 +303,12 @@ fn first<'a>(root: ElementRef<'a>, pred: impl Fn(&Element) -> bool) -> Option<El
 fn text(
     root: ElementRef<'_>,
     skip: &dyn Fn(&Element) -> bool,
-    on_link: &mut dyn FnMut(&Element),
+    on_link: &mut dyn FnMut(ElementRef<'_>),
 ) -> String {
     fn walk(
         node: ego_tree::NodeRef<'_, Node>,
         skip: &dyn Fn(&Element) -> bool,
-        on_link: &mut dyn FnMut(&Element),
+        on_link: &mut dyn FnMut(ElementRef<'_>),
         out: &mut String,
     ) {
         for child in node.children() {
@@ -301,8 +318,10 @@ fn text(
                     if skip(element) {
                         continue;
                     }
-                    if element.name() == "a" {
-                        on_link(element);
+                    if element.name() == "a"
+                        && let Some(a) = ElementRef::wrap(child)
+                    {
+                        on_link(a);
                     }
                     let block = is(element, &BLOCKS);
                     if block {
@@ -717,6 +736,56 @@ mod tests {
         assert_eq!(
             extracted.hashes.links,
             digest(extracted.links.join("\n").as_bytes())
+        );
+    }
+
+    #[test]
+    fn links_hash_is_unchanged_by_anchor_texts() {
+        // links_are_resolved_normalized_and_sorted と同じ HTML。リンクの文字を足しても links_hash は変わらない
+        let body = chrome(
+            r##"<main>
+                <a href="shinsei.html#form">申請</a>
+                <a href="/kosodate/teate/shinsei.html">申請（同じ）</a>
+                <a href="https://WWW.City.Example.lg.jp/kosodate/?utm_source=x">一覧</a>
+                <a href="https://www.pref.example.jp/">県</a>
+                <a href="mailto:kosodate@city.example.lg.jp">メール</a>
+                <a href="javascript:void(0)">印刷</a>
+                <a href="#top">ページの先頭</a>
+                <a>リンクなし</a>
+                <nav><a href="/sitemap.html">サイトマップ</a></nav>
+            </main>"##,
+        );
+        let extracted = extract(&page("", &body), URL);
+        assert_eq!(
+            extracted.hashes.links,
+            "41aa0ab43d1de72bfc053b607ee453272537291c18e6341e3abcd57887a75866"
+        );
+    }
+
+    #[test]
+    fn anchors_keep_texts() {
+        let body = r#"<main><a href="a.html"> 児童　手当 </a><a href="a.html">別の文字</a><a href="b.html"><img alt="x"></a>
+            <a>リンクなし</a><nav><a href="c.html">ナビ</a></nav></main>"#;
+        let extracted = extract(&page("", body), URL);
+        let at = |file: &str, text: &str| Anchor {
+            url: format!("https://www.city.example.lg.jp/kosodate/teate/{file}"),
+            text: text.into(),
+        };
+        assert_eq!(
+            extracted.anchors,
+            [
+                at("a.html", "児童 手当"),
+                at("a.html", "別の文字"),
+                at("b.html", ""),
+            ]
+        );
+        // links は URL だけ・重複なしのまま
+        assert_eq!(
+            extracted.links,
+            [
+                "https://www.city.example.lg.jp/kosodate/teate/a.html",
+                "https://www.city.example.lg.jp/kosodate/teate/b.html",
+            ]
         );
     }
 

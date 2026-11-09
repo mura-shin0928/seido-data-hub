@@ -7,6 +7,7 @@ pub mod content_versions;
 pub mod crawl_runs;
 pub mod fetch_history;
 pub mod host_moves;
+pub mod page_links;
 pub mod program_urls;
 pub mod programs;
 pub mod resources;

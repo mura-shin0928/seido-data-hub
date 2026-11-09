@@ -87,13 +87,19 @@ impl HostStats {
 pub struct Counters {
     pub retries: u64,
     pub lease_expired: u64,
+    /// 一覧ページのリンクを入れ替えた数。この項目を足す前の実行には無いので、無ければ0
+    #[serde(default)]
+    pub links_replaced: u64,
 }
 
 /// 実行1回分の集計
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RunStats {
-    /// host_key → 集計
+    /// host_key → 集計。一覧ページ（`urls.role = 'index'`）を除く、制度の URL の取得だけ
     pub hosts: BTreeMap<String, HostStats>,
+    /// host_key → 一覧ページの集計。`compared`・`changed` は数えない。この項目を足す前の実行には無いので、無ければ空
+    #[serde(default)]
+    pub index_hosts: BTreeMap<String, HostStats>,
     pub response_ms_p50: Option<u64>,
     pub response_ms_p95: Option<u64>,
     /// この実行で取って、いま failed_final の URL
@@ -106,13 +112,22 @@ pub struct RunStats {
 }
 
 impl RunStats {
-    /// 全ホストを足し合わせた集計
+    /// 制度の URL の全ホストを足し合わせた集計（一覧ページは入らない）
     pub fn totals(&self) -> HostStats {
         let mut total = HostStats::default();
         for h in self.hosts.values() {
             total.add(h);
         }
         total
+    }
+
+    /// 制度の URL と一覧ページを、ホストごとに足し合わせたもの。変更率以外の警告はこれで数える
+    pub fn all_hosts(&self) -> BTreeMap<String, HostStats> {
+        let mut all = self.hosts.clone();
+        for (key, h) in &self.index_hosts {
+            all.entry(key.clone()).or_default().add(h);
+        }
+        all
     }
 }
 
@@ -261,15 +276,18 @@ impl Default for Thresholds {
     }
 }
 
-/// 今回の集計（と、あれば前回）から立つ警告を返す
+/// 今回の集計（と、あれば前回）から立つ警告を返す。
+/// 変更率だけは制度の URL（`totals()`）で数え、ほかは一覧ページも含める（`all_hosts()`）
 pub fn alerts(
     current: &RunStats,
     previous: Option<&RunStats>,
     thresholds: &Thresholds,
 ) -> Vec<Alert> {
     let mut out = Vec::new();
+    let current_hosts = current.all_hosts();
+    let previous_hosts = previous.map(RunStats::all_hosts);
 
-    for (host, h) in &current.hosts {
+    for (host, h) in &current_hosts {
         let count = h.throttled_or_server_error();
         let Some(rate) = ratio(count, h.fetched()) else {
             continue;
@@ -278,8 +296,9 @@ pub fn alerts(
             continue;
         }
         // 前回にそのホストが無い（または取得0件）ときは、前回との比較を外す
-        let previous_rate = previous
-            .and_then(|p| p.hosts.get(host))
+        let previous_rate = previous_hosts
+            .as_ref()
+            .and_then(|p| p.get(host))
             .and_then(|p| ratio(p.throttled_or_server_error(), p.fetched()));
         if let Some(prev) = previous_rate
             && rate <= prev * thresholds.surge_over_previous
@@ -294,27 +313,30 @@ pub fn alerts(
         });
     }
 
-    let total = current.totals();
-    let fetched = total.fetched();
+    let mut all = HostStats::default();
+    for h in current_hosts.values() {
+        all.add(h);
+    }
+    let fetched = all.fetched();
     // 全件失敗は通信まわり（robots の取得不能とネットワークエラー）だけで応答が0のときに限る。
     // 範囲外・robots 拒否・リダイレクト異常はサーバー側の結果で、通信の障害ではない
-    let only_network_failures = current
-        .hosts
+    let only_network_failures = current_hosts
         .values()
         .flat_map(|h| h.stopped.keys())
         .all(|key| key == "robots_unavailable" || key.starts_with("network:"));
-    if fetched >= 1 && total.responses() == 0 && only_network_failures {
+    if fetched >= 1 && all.responses() == 0 && only_network_failures {
         out.push(Alert::AllFailed { fetched });
     }
 
     // 何も取らずに正常に終わる実行（接続先が空・時刻の来た URL が無い）を拾う
-    if thresholds.min_responses > 0 && total.responses() < thresholds.min_responses {
+    if thresholds.min_responses > 0 && all.responses() < thresholds.min_responses {
         out.push(Alert::TooFewResponses {
-            responses: total.responses(),
+            responses: all.responses(),
             expected: thresholds.min_responses,
         });
     }
 
+    let total = current.totals();
     if total.compared >= thresholds.change_min_compared
         && total
             .change_rate()
@@ -337,7 +359,7 @@ pub fn alerts(
     }
 
     // 見送りは利用者に見えるものを変えないので、運用側にだけ知らせる（設計の決定51）
-    for (host, h) in &current.hosts {
+    for (host, h) in &current_hosts {
         if h.stopped.contains_key("robots_unavailable") {
             out.push(Alert::HostSkipped { host: host.clone() });
         }
@@ -416,8 +438,8 @@ pub fn render_markdown(meta: &RunMeta, stats: &RunStats, alerts: &[Alert]) -> St
         stats.queue_due
     ));
 
-    let robots: Vec<&str> = stats
-        .hosts
+    let all_hosts = stats.all_hosts();
+    let robots: Vec<&str> = all_hosts
         .iter()
         .filter(|(_, h)| h.stopped.contains_key("robots_unavailable"))
         .map(|(k, _)| k.as_str())
@@ -480,6 +502,29 @@ pub fn render_markdown(meta: &RunMeta, stats: &RunStats, alerts: &[Alert]) -> St
         "| 再試行 / failed_final / lease 切れ | {retries} / {} / {lease_expired} |\n",
         stats.failed_final
     ));
+
+    let index = stats
+        .index_hosts
+        .values()
+        .fold(HostStats::default(), |mut sum, h| {
+            sum.add(h);
+            sum
+        });
+    if index.fetched() > 0 {
+        let links_replaced = stats
+            .counters
+            .as_ref()
+            .map_or_else(|| "—".to_string(), |c| c.links_replaced.to_string());
+        md.push_str("\n### 一覧ページ\n\n| 項目 | 値 |\n|---|---|\n");
+        md.push_str(&format!("| 取得 | {} |\n", index.fetched()));
+        md.push_str(&format!("| 200・304 | {} |\n", index.ok()));
+        md.push_str(&format!(
+            "| 404・410 | {} |\n",
+            index.status(404) + index.status(410)
+        ));
+        md.push_str(&format!("| 403 | {} |\n", index.status(403)));
+        md.push_str(&format!("| リンクを入れ替えた | {links_replaced} |\n"));
+    }
 
     md.push_str(&format!(
         "\n<details><summary>ホスト別（{}）</summary>\n\n",
@@ -729,6 +774,7 @@ mod tests {
             counters: Some(Counters {
                 retries: 0,
                 lease_expired,
+                links_replaced: 0,
             }),
             ..stats(vec![(CITY, host(&[(200, fetched)]))])
         };
@@ -799,6 +845,7 @@ mod tests {
         s.counters = Some(Counters {
             retries: 2,
             lease_expired: 1,
+            links_replaced: 0,
         });
         let m = RunMeta {
             duration_secs: Some(150),
@@ -856,6 +903,7 @@ mod tests {
         s.counters = Some(Counters {
             retries: 1,
             lease_expired: 0,
+            links_replaced: 0,
         });
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(serde_json::from_value::<RunStats>(json).unwrap(), s);
@@ -863,5 +911,91 @@ mod tests {
         let json = serde_json::to_value(&a).unwrap();
         assert_eq!(json["kind"], "all_failed");
         assert_eq!(serde_json::from_value::<Alert>(json).unwrap(), a);
+    }
+
+    fn with_index(hosts: Vec<(&str, HostStats)>, index: Vec<(&str, HostStats)>) -> RunStats {
+        RunStats {
+            index_hosts: index.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
+            ..stats(hosts)
+        }
+    }
+
+    #[test]
+    fn change_rate_ignores_index_pages() {
+        let mut content = host(&[(200, 100)]);
+        content.compared = 100;
+        content.changed = 10;
+        // 一覧ページは変更を数えない。仮に数えていても変更率には入れない
+        let mut index = host(&[(200, 100)]);
+        index.compared = 100;
+        index.changed = 100;
+        let s = with_index(vec![(CITY, content)], vec![(CITY, index)]);
+        assert!(alerts(&s, None, &Thresholds::default()).is_empty());
+        assert_eq!(s.totals().compared, 100);
+    }
+
+    #[test]
+    fn surge_counts_index_pages() {
+        let s = with_index(vec![], vec![(CITY, host(&[(200, 10), (503, 10)]))]);
+        let found = alerts(&s, None, &Thresholds::default());
+        assert!(
+            matches!(found.as_slice(), [Alert::HostErrorsSurged { host, count: 10, .. }] if host == CITY),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn skipped_host_seen_in_index_pages() {
+        let mut skipped = host(&[]);
+        skipped.stopped.insert("robots_unavailable".into(), 1);
+        let s = with_index(
+            vec![("http://ok.example.jp", host(&[(200, 3)]))],
+            vec![(CITY, skipped)],
+        );
+        assert_eq!(
+            alerts(&s, None, &Thresholds::default()),
+            vec![Alert::HostSkipped { host: CITY.into() }]
+        );
+    }
+
+    #[test]
+    fn old_stats_without_index_hosts_parse() {
+        let json = serde_json::json!({
+            "hosts": {},
+            "response_ms_p50": null, "response_ms_p95": null,
+            "failed_final": 0, "queue_due": 0, "queue_oldest_wait_secs": null,
+            "counters": { "retries": 2, "lease_expired": 1 }
+        });
+        let s = serde_json::from_value::<RunStats>(json).unwrap();
+        assert!(s.index_hosts.is_empty());
+        assert_eq!(s.counters.unwrap().links_replaced, 0);
+    }
+
+    #[test]
+    fn markdown_shows_index_section() {
+        let mut index = host(&[(200, 3), (304, 1), (404, 2), (403, 1)]);
+        index.bytes = 10;
+        let mut s = with_index(vec![(CITY, host(&[(200, 1)]))], vec![(CITY, index)]);
+        s.counters = Some(Counters {
+            retries: 0,
+            lease_expired: 0,
+            links_replaced: 2,
+        });
+        let md = render_markdown(&meta(), &s, &[]);
+        assert!(
+            md.contains("### 一覧ページ\n\n| 項目 | 値 |\n|---|---|\n"),
+            "{md}"
+        );
+        assert!(md.contains("| 取得 | 7 |"), "{md}");
+        assert!(md.contains("| 200・304 | 4 |"), "{md}");
+        assert!(md.contains("| 404・410 | 2 |"), "{md}");
+        assert!(md.contains("| 403 | 1 |"), "{md}");
+        assert!(md.contains("| リンクを入れ替えた | 2 |"), "{md}");
+
+        s.counters = None;
+        assert!(render_markdown(&meta(), &s, &[]).contains("| リンクを入れ替えた | — |"));
+
+        let none = with_index(vec![(CITY, host(&[(200, 1)]))], vec![]);
+        assert!(!render_markdown(&meta(), &none, &[]).contains("一覧ページ"));
     }
 }

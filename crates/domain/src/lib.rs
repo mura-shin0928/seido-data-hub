@@ -5,6 +5,7 @@ pub mod change;
 pub mod extract;
 pub mod fetch;
 pub mod liveness;
+pub mod moves;
 pub mod registry;
 pub mod related;
 pub mod run_report;
